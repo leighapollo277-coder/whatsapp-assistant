@@ -196,7 +196,15 @@ module.exports = async (req, res) => {
       scopes: ['https://www.googleapis.com/auth/tasks'] 
     });
     const tasksApi = google.tasks({ version: 'v1', auth });
-    const config = { GEMINI_API_KEY, GOOGLE_TASK_LIST_ID, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN };
+    const procConfig = { 
+      GEMINI_API_KEY, 
+      GOOGLE_TASK_LIST_ID, 
+      TWILIO_ACCOUNT_SID, 
+      TWILIO_AUTH_TOKEN,
+      GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      GOOGLE_PRIVATE_KEY,
+      GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID || 'primary'
+    };
 
     // 6. Run Processor with In-Request Active Retry
     const isImage = body.MediaUrl0 && body.MediaContentType0 && body.MediaContentType0.includes('image');
@@ -301,12 +309,6 @@ module.exports = async (req, res) => {
     }
 
     return res.status(200).send('<Response></Response>');
-
-  } catch (globalError) {
-    console.error('GLOBAL ERROR:', globalError.message);
-    return res.status(200).send(`<Response><Message>❌ 系統全域錯誤: ${globalError.message}</Message></Response>`);
-  }
-};
 
   } catch (globalError) {
     console.error('GLOBAL ERROR:', globalError.message);

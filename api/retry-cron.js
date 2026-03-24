@@ -49,7 +49,10 @@ module.exports = async (req, res) => {
     GEMINI_API_KEY: config.GEMINI_API_KEY.replace(/^"|"$/g, ''), 
     GOOGLE_TASK_LIST_ID: config.GOOGLE_TASK_LIST_ID, 
     TWILIO_ACCOUNT_SID: config.TWILIO_ACCOUNT_SID, 
-    TWILIO_AUTH_TOKEN: config.TWILIO_AUTH_TOKEN 
+    TWILIO_AUTH_TOKEN: config.TWILIO_AUTH_TOKEN,
+    GOOGLE_SERVICE_ACCOUNT_EMAIL: config.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    GOOGLE_PRIVATE_KEY: config.GOOGLE_PRIVATE_KEY,
+    GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID || 'primary'
   };
 
   // 1. Get all pending codes

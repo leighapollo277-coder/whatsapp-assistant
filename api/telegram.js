@@ -181,7 +181,13 @@ module.exports = async (req, res) => {
       scopes: ['https://www.googleapis.com/auth/tasks'] 
     });
     const tasksApi = google.tasks({ version: 'v1', auth });
-    const procConfig = { GEMINI_API_KEY, GOOGLE_TASK_LIST_ID };
+    const procConfig = { 
+      GEMINI_API_KEY, 
+      GOOGLE_TASK_LIST_ID,
+      GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      GOOGLE_PRIVATE_KEY,
+      GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID || 'primary'
+    };
 
     if (payload.MediaContentType0 && payload.MediaContentType0.includes('image')) {
       await messagingClient.sendText("正在利用 Google Search 進行事實查核... 請稍候 ⏳");
