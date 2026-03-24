@@ -1,25 +1,29 @@
 {
-  "functions": {
-    "api/**/*.js": {
-      "maxDuration": 60
-    }
-  },
-  "routes": [
+  "version": 2,
+  "rewrites": [
     {
-      "src": "/api/webhook",
-      "dest": "/api/webhook.js"
+      "source": "/api/webhook",
+      "destination": "/api/webhook.js"
     },
     {
-      "src": "/api/telegram",
-      "dest": "/api/telegram.js"
+      "source": "/api/telegram",
+      "destination": "/api/telegram.js"
     },
     {
-      "src": "/api/dashboard",
-      "dest": "/api/dashboard.js"
+      "source": "/api/retry-cron",
+      "destination": "/api/retry-cron.js"
     },
     {
-      "src": "/(.*)",
-      "dest": "/public/$1"
+      "source": "/api/test",
+      "destination": "/api/test.js"
+    },
+    {
+      "source": "/api/dashboard",
+      "destination": "/api/dashboard.js"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/public/$1"
     }
   ],
   "cleanUrls": true
