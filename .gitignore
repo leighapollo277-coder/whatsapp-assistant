@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.local
+.env.production.local
+.vercel/
+dist/
+.next/
+*.log
+.DS_Store
+rclone*
+test_*.js
+*.mp3
+/tmp/
