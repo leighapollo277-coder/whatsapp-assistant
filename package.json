@@ -18,6 +18,8 @@
     "@google-cloud/storage": "^7.19.0",
     "@google-cloud/text-to-speech": "^6.4.0",
     "@google/generative-ai": "^0.21.0",
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.0",
     "axios": "^1.13.6",
     "body-parser": "^2.2.2",
     "cheerio": "^1.2.0",

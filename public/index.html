@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Assistant - 任務與筆記管理</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-glow: rgba(99, 102, 241, 0.4);
+            --bg: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --text: #f8fafc;
+            --text-dim: #94a3b8;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            overflow-x: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 2rem;
+        }
+
+        /* Animated Background */
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 50%);
+            z-index: -1;
+            animation: pulse 15s infinite alternate;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1) translate(0, 0); }
+            100% { transform: scale(1.2) translate(10%, 10%); }
+        }
+
+        header {
+            width: 100%;
+            max-width: 1200px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 3rem;
+        }
+
+        h1 { font-weight: 600; font-size: 2rem; letter-spacing: -0.02em; }
+        h1 span { color: var(--primary); }
+
+        .btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 6px -1px var(--primary-glow);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px var(--primary-glow);
+            filter: brightness(1.1);
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            padding: 2rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            display: none; /* Hidden until auth */
+            animation: fadeIn 0.8s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .login-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 60vh;
+            text-align: center;
+        }
+
+        .login-screen p { margin-bottom: 2rem; color: var(--text-dim); font-size: 1.1rem; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+
+        th {
+            text-align: left;
+            padding: 1rem;
+            color: var(--text-dim);
+            font-weight: 400;
+            font-size: 0.9rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        td {
+            padding: 1.25rem 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            vertical-align: top;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--primary);
+            border: 1px solid var(--primary-glow);
+        }
+
+        .task-list { list-style: none; }
+        .task-list li { margin-bottom: 0.5rem; display: flex; align-items: flex-start; }
+        .task-list li::before { content: '•'; color: var(--primary); margin-right: 0.75rem; }
+
+        .timestamp { color: var(--text-dim); font-size: 0.85rem; }
+        .refined { font-weight: 400; line-height: 1.5; color: #e2e8f0; }
+        
+        a { color: var(--primary); text-decoration: none; font-size: 0.9rem; transition: opacity 0.2s; }
+        a:hover { opacity: 0.8; }
+
+        .status { font-size: 0.8rem; color: var(--text-dim); }
+
+        #register-btn { margin-top: 1rem; background: transparent; border: 1px solid var(--text-dim); color: var(--text-dim); box-shadow: none; font-size: 0.8rem; }
+        #register-btn:hover { border-color: white; color: white; }
+
+        @media (max-width: 768px) {
+            padding: 1rem;
+            table, thead, tbody, th, td, tr { display: block; }
+            th { display: none; }
+            td { padding: 1rem 0; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+            td::before {
+                content: attr(data-label);
+                display: block;
+                font-size: 0.75rem;
+                color: var(--text-dim);
+                margin-bottom: 0.5rem;
+                text-transform: uppercase;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>AI <span>Assistant</span></h1>
+        <div id="user-info"></div>
+    </header>
+
+    <div id="login-screen" class="login-screen">
+        <h2>歡迎回來</h2>
+        <p>請使用身分認證（FaceID / 指紋）解鎖您的任務與筆記。</p>
+        <button id="login-btn" class="btn">🔑 生物識別登入</button>
+        <button id="register-btn" class="btn">首次使用：註冊裝置</button>
+    </div>
+
+    <div id="dashboard" class="container">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+            <h3>任務與筆記總覽</h3>
+            <button id="refresh-btn" class="btn" style="padding: 0.5rem 1rem; font-size: 0.9rem;">🔄 刷新數據</button>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 15%">時間</th>
+                    <th style="width: 10%">分類</th>
+                    <th style="width: 45%">筆記內容</th>
+                    <th style="width: 20%">提取任務</th>
+                    <th style="width: 10%">狀態</th>
+                </tr>
+            </thead>
+            <tbody id="data-table">
+                <!-- Data will be loaded here -->
+            </tbody>
+        </table>
+    </div>
+
+    <script type="module">
+        import { startRegistration, startAuthentication } from 'https://esm.sh/@simplewebauthn/browser';
+
+        const loginScreen = document.getElementById('login-screen');
+        const dashboard = document.getElementById('dashboard');
+        const dataTable = document.getElementById('data-table');
+
+        async function loadData() {
+            try {
+                const res = await fetch('/api/dashboard?action=get-data');
+                if (res.status === 401) return showLogin();
+                
+                const { data } = await res.json();
+                loginScreen.style.display = 'none';
+                dashboard.style.display = 'block';
+                
+                dataTable.innerHTML = data.map(item => `
+                    <tr>
+                        <td data-label="時間" class="timestamp">${item.timestamp}</td>
+                        <td data-label="分類"><span class="badge">${item.category}</span></td>
+                        <td data-label="內容">
+                            <div class="refined">${item.refined}</div>
+                            ${item.calLink ? `<a href="${item.calLink}" target="_blank">📅 查看日曆事件</a>` : ''}
+                        </td>
+                        <td data-label="任務">
+                            <ul class="task-list">
+                                ${item.tasks ? item.tasks.split('\n').map(t => `<li>${t}</li>`).join('') : '<li style="color: grey">無提取任務</li>'}
+                            </ul>
+                        </td>
+                        <td data-label="狀態" class="status">${item.status}</td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                console.error('Load failed:', err);
+            }
+        }
+
+        async function handleRegister() {
+            const resp = await fetch('/api/dashboard?action=generate-registration-options');
+            const options = await resp.json();
+            const regResp = await startRegistration(options);
+            const verifyResp = await fetch('/api/dashboard?action=verify-registration', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(regResp)
+            });
+            const result = await verifyResp.json();
+            if (result.verified) alert('裝置註冊成功！現在可以使用生物識別登入。');
+        }
+
+        async function handleLogin() {
+            const resp = await fetch('/api/dashboard?action=generate-authentication-options');
+            const options = await resp.json();
+            const authResp = await startAuthentication(options);
+            const verifyResp = await fetch('/api/dashboard?action=verify-authentication', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(authResp)
+            });
+            const result = await verifyResp.json();
+            if (result.verified) loadData();
+            else alert('認證失敗');
+        }
+
+        function showLogin() {
+            loginScreen.style.display = 'flex';
+            dashboard.style.display = 'none';
+        }
+
+        document.getElementById('register-btn').onclick = handleRegister;
+        document.getElementById('login-btn').onclick = handleLogin;
+        document.getElementById('refresh-btn').onclick = loadData;
+
+        // Initial load
+        loadData();
+    </script>
+</body>
+</html>

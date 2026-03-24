@@ -181,5 +181,27 @@ module.exports = async (req, res) => {
     }
   }
 
+  // 7. Process Due Reminders (Sorted Set: reminders:pending)
+  console.log('--- Checking for due reminders ---');
+  const dueReminders = await redis.zrangebyscore('reminders:pending', 0, now);
+  console.log(`Found ${dueReminders.length} due reminders.`);
+  
+  for (const rawReminder of dueReminders) {
+    try {
+      const reminder = JSON.parse(rawReminder);
+      const remClient = (reminder.platform === 'telegram')
+        ? new TelegramMessagingClient(TELEGRAM_BOT_TOKEN, reminder.to)
+        : new TwilioMessagingClient(twilioClient, reminder.To, reminder.to);
+      
+      console.log(`Sending reminder to ${reminder.to} (${reminder.platform})...`);
+      await remClient.sendText(reminder.message);
+      
+      // Remove from queue after successful send
+      await redis.zrem('reminders:pending', rawReminder);
+    } catch (remErr) {
+      console.error('Failed to process reminder:', remErr.message);
+    }
+  }
+
   return res.status(200).json({ status: 'done', processed, processedCode: code });
 };

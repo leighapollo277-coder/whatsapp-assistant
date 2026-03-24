@@ -3,6 +3,8 @@ const { EdgeTTS } = require('node-edge-tts');
 const fs = require('fs');
 const FormData = require('form-data');
 const cheerio = require('cheerio');
+const { GoogleSheetsHelper } = require('./sheets');
+const { google } = require('googleapis');
 
 // Helper: Global (Model, Key) Priority Ordering
 async function getPrioritizedPairs(models, rawKeys, redis) {
@@ -130,8 +132,18 @@ async function uploadToCatbox(buffer, mimeType, filename) {
  * Core Processing Logic
  */
 async function processRequest(payload, messagingClient, tasksApi, config, redis, skipVoice = false, skipText = false, cachedResult = null) {
-  const { Body, From, MediaUrl0, MediaContentType0 } = payload;
-  const { GEMINI_API_KEY, GOOGLE_TASK_LIST_ID } = config;
+  const { Body, From, MediaUrl0, MediaContentType0, platform } = payload;
+  const { GEMINI_API_KEY, GOOGLE_TASK_LIST_ID, GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY, GOOGLE_CALENDAR_ID } = config;
+
+  // Initialize Google Auth for Sheets/Calendar if needed
+  const auth = new google.auth.JWT(
+    GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    null,
+    GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive.file']
+  );
+  const sheetsHelper = new GoogleSheetsHelper(auth);
+  const calendar = google.calendar({ version: 'v3', auth });
 
   // 1. Handle Image (Fact-Check)
   if (MediaUrl0 && MediaContentType0 && MediaContentType0.includes('image')) {
@@ -320,33 +332,145 @@ CRITICAL: TRADITIONAL CHINESE only. Use Google Search grounding.`;
     }
   }
 
-  // 3. Handle Audio (Task Sync) 
+  // 3. Handle Voice / Drafting Session
+  const sessionKey = `voice_session:${From}`;
+  const sessionData = redis ? await redis.get(sessionKey) : null;
+  const session = sessionData ? JSON.parse(sessionData) : null;
+
+  // A. Handle Confirmation (User says "OK", "確定", "可以", etc.)
+  if (session && Body && /^(ok|okay|可以|確定|确认|好|得|冇問題|無問題)$/i.test(Body.trim())) {
+    await messagingClient.sendText("✅ 收到！正在為您整理並同步至 Google Sheets 及日曆... ⏳");
+    
+    // Extract Metadata (Category, Tasks, Calendar Events)
+    const extractionPrompt = `分析以下內容並提取元數據。TRADITIONAL CHINESE only. 
+內容：${session.currentDraft}
+JSON Output: {
+  "refined": "對內容進行潤飾（廣東話口語化）",
+  "category": "分類（例如：工作、生活、財務、學習）",
+  "tasks": ["任務1", "任務2"],
+  "calendar_events": [{"title": "事件名", "start": "ISO_DATE_TIME", "end": "ISO_DATE_TIME", "description": "..."}]
+}
+Current Time: ${new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong Kong' })}`;
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY.split(',')[0]}`;
+    const extractionResponse = await axios.post(geminiUrl, {
+      contents: [{ parts: [{ text: extractionPrompt }] }]
+    }, { timeout: 25000 });
+
+    const extractionResult = extractionResponse.data.candidates[0].content.parts[0].text;
+    const jsonMatch = extractionResult.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const metadata = JSON.parse(jsonMatch[0]);
+      
+      // 1. Sync to Google Sheets
+      const spreadsheetId = await sheetsHelper.getOrCreateSpreadsheet(redis);
+      await sheetsHelper.appendRow(spreadsheetId, {
+        timestamp: new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong Kong' }),
+        original: session.originalTranscription,
+        refined: metadata.refined,
+        category: metadata.category,
+        tasks: metadata.tasks?.join('\n'),
+        calendarLink: '' // Will update if events created
+      });
+
+      // 2. Sync to Google Calendar
+      let calLinks = [];
+      if (metadata.calendar_events && metadata.calendar_events.length > 0) {
+        for (const event of metadata.calendar_events) {
+          try {
+            const calRes = await calendar.events.insert({
+              calendarId: GOOGLE_CALENDAR_ID || 'primary',
+              requestBody: {
+                summary: event.title,
+                description: event.description + `\n\n備註：${metadata.refined}`,
+                start: { dateTime: event.start, timeZone: 'Asia/Hong Kong' },
+                end: { dateTime: event.end, timeZone: 'Asia/Hong Kong' }
+              }
+            });
+            if (calRes.data.htmlLink) calLinks.push(calRes.data.htmlLink);
+          } catch (calErr) {
+            console.error('Calendar Insert Error:', calErr.message);
+          }
+        }
+      }
+
+      // 3. Set Reminders
+      if (metadata.calendar_events && metadata.calendar_events.length > 0) {
+        for (const event of metadata.calendar_events) {
+          const reminderTime = new Date(new Date(event.start).getTime() - 15 * 60000).getTime(); // 15 mins before
+          if (reminderTime > Date.now()) {
+            const reminderTask = {
+              type: 'reminder',
+              platform: platform || 'whatsapp',
+              to: From,
+              message: `⏰ 提醒您：待會兒 ${new Date(event.start).toLocaleTimeString('zh-HK')} 需要「${event.title}」！\n內容：${metadata.refined}`,
+              time: reminderTime
+            };
+            // Use Sorted Set for reminders: score is the timestamp
+            await redis.zadd('reminders:pending', reminderTime, JSON.stringify(reminderTask));
+          }
+        }
+      }
+
+      await messagingClient.sendText(`🎉 已成功處理：\n\n📌 分類：${metadata.category}\n📝 潤飾：${metadata.refined}${calLinks.length > 0 ? `\n📅 已加入日曆：${calLinks[0]}` : ''}\n\n您可以在網頁管理後台查看完整內容！`);
+      await redis.del(sessionKey);
+    }
+    return { handled: true };
+  }
+
+  // B. Handle New Voice or Voice Edit
   if (MediaUrl0 && MediaContentType0 && (MediaContentType0.includes('audio') || MediaContentType0.includes('video'))) {
     console.log(`Processing voice message from ${From}`);
-    await messagingClient.sendText("正在處理您的廣東話語音訊息... 請稍候 ⏳");
+    if (!session) {
+      await messagingClient.sendText("正在傾聽您的想法... ⏳");
+    } else {
+      await messagingClient.sendText("正在根據您的新指令修改草稿... ⏳");
+    }
 
     const buffer = await messagingClient.downloadMedia(MediaUrl0);
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-    const prompt = `Extract tasks from this message. TRADITIONAL CHINESE only. JSON format: { transcription: "...", tasks: [{ title: "...", due_datetime: "ISO", description: "..." }] }. Current: ${new Date().toISOString()}`;
-    
-    const response = await axios.post(geminiUrl, {
-      contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: MediaContentType0, data: buffer.toString("base64") } }] }]
-    }, { timeout: 25000, headers: { 'x-goog-api-key': GEMINI_API_KEY } });
-
-    const resultText = response.data.candidates[0].content.parts[0].text;
-    const jsonMatch = resultText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const data = JSON.parse(jsonMatch[0]);
-      for (const task of data.tasks) {
-        await tasksApi.tasks.insert({
-          tasklist: GOOGLE_TASK_LIST_ID,
-          requestBody: { title: task.title, notes: `Transcribed: ${data.transcription}\n\n${task.description || ''}`, due: task.due_datetime || undefined }
-        });
-      }
-      await messagingClient.sendText(`✅ 任務已添加到 Google Tasks！\n\n錄音內容：${data.transcription}`);
+    // Transcribe or Refine
+    let transcriptionPrompt = "";
+    if (!session) {
+      transcriptionPrompt = `請將這段語音轉錄為繁體中文文本。如果是廣東話，請保留口語表達。`;
+    } else {
+      transcriptionPrompt = `參考之前的草稿：『${session.currentDraft}』。
+現在用戶提供了新的語音指令，請根據新指令「修改」或「補充」現有草稿。
+返回最新的完整內容版本（繁體中文）。`;
     }
-    return true;
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY.split(',')[0]}`;
+    const transcriptionResponse = await axios.post(geminiUrl, {
+      contents: [{ parts: [{ text: transcriptionPrompt }, { inline_data: { mime_type: MediaContentType0, data: buffer.toString("base64") } }] }]
+    }, { timeout: 25000 });
+
+    const transcription = transcriptionResponse.data.candidates[0].content.parts[0].text.trim();
+
+    if (!session) {
+      // Create new session
+      const newSession = {
+        status: 'awaiting_confirmation',
+        originalTranscription: transcription,
+        currentDraft: transcription,
+        lastUpdated: Date.now()
+      };
+      await redis.set(sessionKey, JSON.stringify(newSession), 'EX', 1800); // 30 min expiry
+      await messagingClient.sendText(`我聽到的是：\n\n「${transcription}」\n\n✅ 如果正確，請回覆「OK」或「可以」。\n🎙️ 如果需要修改，請直接發送新的語音指令。\n❌ 如果要取消，請回覆「CANCEL」。`);
+    } else {
+      // Update session
+      session.currentDraft = transcription;
+      session.lastUpdated = Date.now();
+      await redis.set(sessionKey, JSON.stringify(session), 'EX', 1800);
+      await messagingClient.sendText(`已根據您的要求修改為：\n\n「${transcription}」\n\n✅ 確認請回覆「OK」，或繼續發送語音修改。`);
+    }
+    return { handled: true };
+  }
+
+  // C. Handle Cancel
+  if (session && Body && /^(cancel|取消|唔要|唔使|刪除|刪除草稿)$/i.test(Body.trim())) {
+    await redis.del(sessionKey);
+    await messagingClient.sendText("🗑️ 已取消目前的草稿。");
+    return { handled: true };
   }
 
   return { handled: false };
