@@ -10,12 +10,26 @@ const {
 const redis = new Redis(process.env.KV_REDIS_URL);
 
 // --- Configuration ---
-const RP_ID = process.env.VERCEL_URL ? new URL('https://' + process.env.VERCEL_URL).hostname : 'localhost';
+// Note: WebAuthn requires a consistent RP_ID. We'll prioritize the production domain.
+const PUBLIC_DOMAIN = 'whatsapp-assistant-mu.vercel.app';
+const RP_ID = process.env.NODE_ENV === 'production' ? PUBLIC_DOMAIN : 'localhost';
 const RP_NAME = 'AI Assistant Dashboard';
-const ORIGIN = process.env.VERCEL_URL ? `https://whatsapp-assistant-mu.vercel.app` : 'http://localhost:3000';
+const ORIGIN = process.env.NODE_ENV === 'production' ? `https://${PUBLIC_DOMAIN}` : 'http://localhost:3000';
+
+// Helper: Parse cookies manually (Vercel Node.js doesn't provide req.cookies)
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) return cookies;
+  cookieHeader.split(';').forEach(cookie => {
+    const [name, ...rest] = cookie.split('=');
+    cookies[name.trim()] = rest.join('=').trim();
+  });
+  return cookies;
+}
 
 module.exports = async (req, res) => {
   const { action } = req.query;
+  const cookies = parseCookies(req.headers.cookie);
 
   try {
     if (action === 'generate-registration-options') {
@@ -45,7 +59,15 @@ module.exports = async (req, res) => {
 
       if (verification.verified) {
         const { registrationInfo } = verification;
-        await redis.set('webauthn:credential:admin', JSON.stringify(registrationInfo), 'EX', 3600 * 24 * 365);
+        // Convert to base64 for storage
+        const serializableInfo = {
+          credentialID: Buffer.from(registrationInfo.credentialID).toString('base64'),
+          credentialPublicKey: Buffer.from(registrationInfo.credentialPublicKey).toString('base64'),
+          counter: registrationInfo.counter,
+          credentialDeviceType: registrationInfo.credentialDeviceType,
+          credentialBackedUp: registrationInfo.credentialBackedUp,
+        };
+        await redis.set('webauthn:credential:admin', JSON.stringify(serializableInfo), 'EX', 3600 * 24 * 365);
         return res.status(200).json({ verified: true });
       }
       return res.status(400).json({ error: 'Registration failed' });
@@ -61,7 +83,6 @@ module.exports = async (req, res) => {
         allowCredentials: [{
           id: credential.credentialID,
           type: 'public-key',
-          transports: credential.authenticatorSelection?.transports,
         }],
         userVerification: 'preferred',
       });
@@ -72,6 +93,8 @@ module.exports = async (req, res) => {
     if (action === 'verify-authentication') {
       const expectedChallenge = await redis.get('webauthn:challenge:admin');
       const credentialData = await redis.get('webauthn:credential:admin');
+      if (!credentialData) throw new Error('No credential stored');
+      
       const credential = JSON.parse(credentialData);
 
       const verification = await verifyAuthenticationResponse({
@@ -87,7 +110,6 @@ module.exports = async (req, res) => {
       });
 
       if (verification.verified) {
-        // Simple session management
         const sessionId = Math.random().toString(36).substring(2);
         await redis.set(`session:${sessionId}`, 'admin', 'EX', 3600);
         res.setHeader('Set-Cookie', `session_id=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600`);
@@ -97,12 +119,11 @@ module.exports = async (req, res) => {
     }
 
     if (action === 'get-data') {
-      const sessionId = req.cookies?.session_id || req.headers.authorization?.split(' ')[1];
+      const sessionId = cookies.session_id || req.headers.authorization?.split(' ')[1];
       if (!sessionId || !(await redis.get(`session:${sessionId}`))) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
-      // Fetch from Google Sheets
       const auth = new google.auth.JWT(
         process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
         null,
@@ -116,7 +137,7 @@ module.exports = async (req, res) => {
 
       const response = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: 'Sheet1!A2:G100', // Fetch latest 100 rows
+        range: 'Sheet1!A2:G100',
       });
 
       const rows = response.data.values || [];
@@ -128,14 +149,14 @@ module.exports = async (req, res) => {
         tasks: r[4],
         calLink: r[5],
         status: r[6]
-      })).reverse(); // Newest first
+      })).reverse();
 
       return res.status(200).json({ data });
     }
 
     return res.status(404).send('Not Found');
   } catch (err) {
-    console.error('Dashboard API Error:', err.message);
-    return res.status(500).json({ error: err.message });
+    console.error(`Dashboard API Error [${action}]:`, err.message);
+    return res.status(500).json({ error: err.message, action });
   }
 };

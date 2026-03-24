@@ -352,7 +352,8 @@ JSON Output: {
 }
 Current Time: ${new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong Kong' })}`;
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY.split(',')[0]}`;
+    const cleanKey = GEMINI_API_KEY.split(',')[0].trim().replace(/^"|"$/g, '');
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
     const extractionResponse = await axios.post(geminiUrl, {
       contents: [{ parts: [{ text: extractionPrompt }] }]
     }, { timeout: 25000 });
@@ -439,7 +440,8 @@ Current Time: ${new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong Kong' 
 返回最新的完整內容版本（繁體中文）。`;
     }
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY.split(',')[0]}`;
+    const cleanKey = GEMINI_API_KEY.split(',')[0].trim().replace(/^"|"$/g, '');
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
     const transcriptionResponse = await axios.post(geminiUrl, {
       contents: [{ parts: [{ text: transcriptionPrompt }, { inline_data: { mime_type: MediaContentType0, data: buffer.toString("base64") } }] }]
     }, { timeout: 25000 });
