@@ -219,7 +219,7 @@ module.exports = async (req, res) => {
 
     while (attempts < MAX_ATTEMPTS) {
       try {
-        const procResult = await processRequest(body, messagingClient, tasksApi, config, redis, true, false); // skipVoice: true, skipText: false
+        const procResult = await processRequest(body, messagingClient, tasksApi, procConfig, redis, true, false); // skipVoice: true, skipText: false
         
         if (procResult.linkUrl) {
           // Queue for web-link (Bilingual translation)
