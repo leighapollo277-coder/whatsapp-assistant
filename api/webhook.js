@@ -62,6 +62,8 @@ module.exports = async (req, res) => {
     // Ensure we have all fields for logging/processing
     const { Body, From, To, MediaUrl0, MediaContentType0 } = body;
     const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    const { TwilioMessagingClient } = require('./lib/messaging');
+    const messagingClient = new TwilioMessagingClient(twilioClient, To, From);
 
     // 3. Handle Commands (CANCEL, /queue, /photo)
     if (Body) {
@@ -73,7 +75,8 @@ module.exports = async (req, res) => {
         const nowHK = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false });
         
         if (pendingCodes.length === 0) {
-          return res.status(200).send(`<Response><Message>📋 目前隊列是空的。\n(現在時間：${nowHK})</Message></Response>`);
+          await messagingClient.sendText(`📋 目前隊列是空的。\n(現在時間：${nowHK})`);
+          return res.status(200).send('<Response></Response>');
         }
         
         let msg = `📋 目前共有 ${pendingCodes.length} 個重試任務：\n(現在時間：${nowHK})\n`;
@@ -86,25 +89,26 @@ module.exports = async (req, res) => {
           msg += `\n${i + 1}. 編號：${code} (待播：${nextRunTime})`;
         }
         msg += `\n\n💡 輸入 "CANCEL [編號]" 或 "/photo [編號]"。`;
-        return res.status(200).send(`<Response><Message>${msg}</Message></Response>`);
+        await messagingClient.sendText(msg);
+        return res.status(200).send('<Response></Response>');
       }
 
       // Handle /photo [CODE]
       if (cleanBody.startsWith('/photo ')) {
         const code = Body.trim().split(' ')[1];
         const rawData = await redis.get(`retry:task:${code}`);
-        if (!rawData) return res.status(200).send(`<Response><Message>❌ 找不到任務編號：${code}</Message></Response>`);
+        if (!rawData) {
+          await messagingClient.sendText(`❌ 找不到任務編號：${code}`);
+          return res.status(200).send('<Response></Response>');
+        }
         
         const task = JSON.parse(rawData);
         if (task.MediaUrl0) {
-          await twilioClient.messages.create({
-            from: To, to: From,
-            body: `📸 任務編號 ${code} 的相片：\n如無法顯示，請按連結：${task.MediaUrl0}`,
-            mediaUrl: [task.MediaUrl0]
-          });
+          await messagingClient.sendMedia(task.MediaUrl0, `📸 任務編號 ${code} 的相片：\n如無法顯示，請按連結：${task.MediaUrl0}`);
           return res.status(200).send('<Response></Response>');
         } else {
-          return res.status(200).send(`<Response><Message>⚠️ 編號 ${code} 不包含圖片附件。</Message></Response>`);
+          await messagingClient.sendText(`⚠️ 編號 ${code} 不包含圖片附件。`);
+          return res.status(200).send('<Response></Response>');
         }
       }
 
@@ -115,13 +119,15 @@ module.exports = async (req, res) => {
         if (query === 'ALL') {
           const pendingCodes = await redis.smembers('retry:pending');
           if (pendingCodes.length === 0) {
-            return res.status(200).send(`<Response><Message>📋 目前沒有需要取消的任務。</Message></Response>`);
+            await messagingClient.sendText(`📋 目前沒有需要取消的任務。`);
+            return res.status(200).send('<Response></Response>');
           }
           for (const code of pendingCodes) {
             await redis.del(`retry:task:${code}`);
           }
           await redis.del('retry:pending');
-          return res.status(200).send(`<Response><Message>✅ 已清除所有重試任務（共 ${pendingCodes.length} 個）。</Message></Response>`);
+          await messagingClient.sendText(`✅ 已清除所有重試任務（共 ${pendingCodes.length} 個）。`);
+          return res.status(200).send('<Response></Response>');
         } else {
           const code = query;
           const taskKey = `retry:task:${code}`;
@@ -130,9 +136,11 @@ module.exports = async (req, res) => {
           if (taskData) {
             await redis.del(taskKey);
             await redis.srem('retry:pending', code);
-            return res.status(200).send(`<Response><Message>✅ 已取消任務編號：${code}</Message></Response>`);
+            await messagingClient.sendText(`✅ 已取消任務編號：${code}`);
+            return res.status(200).send('<Response></Response>');
           } else {
-            return res.status(200).send(`<Response><Message>❌ 找不到任務編號：${code}</Message></Response>`);
+            await messagingClient.sendText(`❌ 找不到任務編號：${code}`);
+            return res.status(200).send('<Response></Response>');
           }
         }
       }
@@ -152,17 +160,17 @@ module.exports = async (req, res) => {
             const context = state.context || "";
             
             await redis.del(`learning_state:${From}`);
-            
-            await twilioClient.messages.create({ from: To, to: From, body: `📚 正在為您深入解析「${keyword}」... 請稍候 ⏳` });
+            await messagingClient.sendText(`📚 正在為您深入解析「${keyword}」... 請稍候 ⏳`);
             
             const config = { GEMINI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN };
-            const { handled, result: diveResult } = await processDeepDive(keyword, context, From, To, twilioClient, config, redis, true, false); // skipVoice: true, skipText: false
+            const { handled, result: diveResult } = await processDeepDive(keyword, context, From, messagingClient, config, redis, true, false); // skipVoice: true, skipText: false
             
             // Queue for background audio (Idempotent: use SmsSid)
             const sid = body.SmsSid || body.MessageSid || `rand_${Math.floor(1000 + Math.random() * 9000)}`;
             const voiceCode = `v_${sid}`;
             await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
               taskType: 'voice-deep-dive',
+              platform: 'whatsapp',
               keyword, context, From, To,
               cachedResult: diveResult,
               queuedAt: Date.now(),
@@ -190,12 +198,10 @@ module.exports = async (req, res) => {
     const tasksApi = google.tasks({ version: 'v1', auth });
     const config = { GEMINI_API_KEY, GOOGLE_TASK_LIST_ID, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN };
 
-    // 5. [DELETED] Passive Retry (Removed to rely on external heartbeat)
-
     // 6. Run Processor with In-Request Active Retry
     const isImage = body.MediaUrl0 && body.MediaContentType0 && body.MediaContentType0.includes('image');
     if (isImage) {
-      await twilioClient.messages.create({ from: To, to: From, body: "正在利用 Google Search 進行深度事實分析... 請稍候 ⏳" });
+      await messagingClient.sendText("正在利用 Google Search 進行深度事實分析... 請稍候 ⏳");
     }
 
     let handled = false;
@@ -205,7 +211,7 @@ module.exports = async (req, res) => {
 
     while (attempts < MAX_ATTEMPTS) {
       try {
-        const procResult = await processRequest(body, twilioClient, tasksApi, config, redis, true, false); // skipVoice: true, skipText: false
+        const procResult = await processRequest(body, messagingClient, tasksApi, config, redis, true, false); // skipVoice: true, skipText: false
         
         if (procResult.linkUrl) {
           // Queue for web-link (Bilingual translation)
@@ -213,6 +219,7 @@ module.exports = async (req, res) => {
           const linkCode = `v_${sid}`;
           await redis.set(`retry:task:${linkCode}`, JSON.stringify({
             taskType: 'web-link',
+            platform: 'whatsapp',
             linkUrl: procResult.linkUrl, From, To,
             queuedAt: Date.now(),
             nextRun: Date.now() + 2000 
@@ -226,6 +233,7 @@ module.exports = async (req, res) => {
           await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
             ...body,
             taskType: 'voice-fact-check',
+            platform: 'whatsapp',
             cachedResult: procResult.result,
             queuedAt: Date.now(),
             nextRun: Date.now() + 5000 
@@ -260,6 +268,7 @@ module.exports = async (req, res) => {
             
             const taskState = {
               ...body,
+              platform: 'whatsapp',
               attempts: 1,
               nextRun: firstRetryTime,
               queuedAt: Date.now()
@@ -271,28 +280,33 @@ module.exports = async (req, res) => {
             const queueCount = await redis.scard('retry:pending');
             const hhmm = new Date(firstRetryTime).toLocaleTimeString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false });
 
-            await twilioClient.messages.create({
-              from: To, to: From,
-              body: `⚠️ AI 額度暫時用盡。
+            await messagingClient.sendText(`⚠️ AI 額度暫時用盡。
 任務編號：${code}
 排程日期：2 分鐘後 (${hhmm})
 隊列狀態：還有 ${queueCount} 個任務在等候。
-如需取消請回覆：CANCEL ${code}`
-            });
+如需取消請回覆：CANCEL ${code}`);
             return res.status(200).send('<Response></Response>');
           }
         } else {
           console.error('Processing Error:', err.message);
-          return res.status(200).send(`<Response><Message>❌ 處理失敗: ${err.message}</Message></Response>`);
+          await messagingClient.sendText(`❌ 處理失敗: ${err.message}`);
+          return res.status(200).send('<Response></Response>');
         }
       }
     }
 
     if (!handled && Body) {
-      return res.status(200).send(`<Response><Message>請傳送廣東話語音訊息、網頁連結或圖片進行事實查核！</Message></Response>`);
+      await messagingClient.sendText(`請傳送廣東話語音訊息、網頁連結或圖片進行事實查核！`);
+      return res.status(200).send('<Response></Response>');
     }
 
     return res.status(200).send('<Response></Response>');
+
+  } catch (globalError) {
+    console.error('GLOBAL ERROR:', globalError.message);
+    return res.status(200).send(`<Response><Message>❌ 系統全域錯誤: ${globalError.message}</Message></Response>`);
+  }
+};
 
   } catch (globalError) {
     console.error('GLOBAL ERROR:', globalError.message);

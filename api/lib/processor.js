@@ -1,4 +1,3 @@
-const twilio = require('twilio');
 const axios = require('axios');
 const { EdgeTTS } = require('node-edge-tts');
 const fs = require('fs');
@@ -57,10 +56,10 @@ async function shortenUrl(longUrl) {
 }
 
 // Helper: Generate and send voice message
-async function generateAndSendVoice(text, twilioClient, from, to, statusPrefix = "🎙️ 正在準備廣東話語音總結...") {
+async function generateAndSendVoice(text, messagingClient, statusPrefix = "🎙️ 正在準備廣東話語音總結...") {
   try {
     if (statusPrefix) {
-      await twilioClient.messages.create({ from: to, to: from, body: statusPrefix });
+      await messagingClient.sendText(statusPrefix);
     }
     const cleanText = text
       .replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '')
@@ -72,7 +71,7 @@ async function generateAndSendVoice(text, twilioClient, from, to, statusPrefix =
     if (!cleanText || cleanText.length < 5) {
       console.warn('Voice Helper: Content too short or only English.');
       if (statusPrefix) {
-        await twilioClient.messages.create({ from: to, to: from, body: "⚠️ 內容過短或僅含英文，無法生成廣東話語音。" });
+        await messagingClient.sendText("⚠️ 內容過短或僅含英文，無法生成廣東話語音。");
       }
       return false;
     }
@@ -98,11 +97,11 @@ async function generateAndSendVoice(text, twilioClient, from, to, statusPrefix =
       timeout: 15000
     });
     const mediaUrl = uploadResponse.data.trim();
-    await twilioClient.messages.create({ from: to, to: from, mediaUrl: [mediaUrl] });
+    await messagingClient.sendVoice(mediaUrl, "");
     return true;
   } catch (err) {
     console.error('Voice Helper Error:', err.message);
-    await twilioClient.messages.create({ from: to, to: from, body: `⚠️ 語音失敗: ${err.message}` });
+    await messagingClient.sendText(`⚠️ 語音失敗: ${err.message}`);
     return false;
   }
 }
@@ -130,23 +129,19 @@ async function uploadToCatbox(buffer, mimeType, filename) {
 /**
  * Core Processing Logic
  */
-async function processRequest(payload, twilioClient, tasksApi, config, redis, skipVoice = false, skipText = false, cachedResult = null) {
-  const { Body, From, To, MediaUrl0, MediaContentType0 } = payload;
-  const { GEMINI_API_KEY, GOOGLE_TASK_LIST_ID, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } = config;
+async function processRequest(payload, messagingClient, tasksApi, config, redis, skipVoice = false, skipText = false, cachedResult = null) {
+  const { Body, From, MediaUrl0, MediaContentType0 } = payload;
+  const { GEMINI_API_KEY, GOOGLE_TASK_LIST_ID } = config;
 
   // 1. Handle Image (Fact-Check)
   if (MediaUrl0 && MediaContentType0 && MediaContentType0.includes('image')) {
     console.log(`Processing image from ${From}`);
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    const imgResponse = await axios({
-      method: 'get', url: MediaUrl0, responseType: 'arraybuffer',
-      auth: { username: TWILIO_ACCOUNT_SID, password: TWILIO_AUTH_TOKEN }
-    });
-    const imgBuffer = Buffer.from(imgResponse.data);
+    const imgBuffer = await messagingClient.downloadMedia(MediaUrl0);
 
     // Backup to Catbox for permanent storage before queuing
-    const backupUrl = await uploadToCatbox(imgBuffer, MediaContentType0, `whatsapp_factcheck_${Date.now()}.jpg`);
+    const backupUrl = await uploadToCatbox(imgBuffer, MediaContentType0, `factcheck_${Date.now()}.jpg`);
     if (backupUrl) {
       payload.MediaUrl0 = backupUrl; // Update original payload so the queue persists the Catbox URL
     }
@@ -168,7 +163,7 @@ async function processRequest(payload, twilioClient, tasksApi, config, redis, sk
 
 --- 知識點解析 ---
 【第二部分：教育解析】
-請用簡單易懂的廣東話口語或書面語，解釋這件事背後的科學、歷史或社會知識點，幫助用戶學習新知識。
+請用簡單易懂的廣東話口語或書面語，解釋這件事背後的科學、歷史 or 社會知識點，幫助用戶學習新知識。
 
 --- 延伸閱讀 ---
 【第三部分：關鍵字菜單】
@@ -204,10 +199,7 @@ CRITICAL: TRADITIONAL CHINESE only. Use Google Search grounding.`;
             const oldName = politeModelNames[currentIterModel] || currentIterModel;
             const newName = politeModelNames[model] || model;
             try {
-              await twilioClient.messages.create({
-                from: To, to: From,
-                body: `🤖 [系統提示] ${oldName} (所有金鑰) 忙碌中，正嘗試切換至 ${newName}... ⏳`
-              });
+              await messagingClient.sendText(`🤖 [系統提示] ${oldName} (所有金鑰) 忙碌中，正嘗試切換至 ${newName}... ⏳`);
             } catch (notifyErr) {}
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
@@ -236,10 +228,7 @@ CRITICAL: TRADITIONAL CHINESE only. Use Google Search grounding.`;
               const nextPair = prioritizedPairs[currentPairIdx + 1];
               if (!skipText && nextPair.model === model) {
                 try {
-                  await twilioClient.messages.create({
-                    from: To, to: From,
-                    body: `🤖 [系統提示] Key ${String.fromCharCode(65 + kIdx)} 額度用盡，正嘗試切換至 Key ${String.fromCharCode(65 + nextPair.index)}... ⏳`
-                  });
+                  await messagingClient.sendText(`🤖 [系統提示] Key ${String.fromCharCode(65 + kIdx)} 額度用盡，正嘗試切換至 Key ${String.fromCharCode(65 + nextPair.index)}... ⏳`);
                 } catch (notifyErr) {}
               }
               await new Promise(resolve => setTimeout(resolve, skipText ? 100 : 1500));
@@ -292,17 +281,17 @@ CRITICAL: TRADITIONAL CHINESE only. Use Google Search grounding.`;
     if (!skipText) {
       const CHUNK_SIZE = 1500;
       for (let i = 0; i < factCheckResult.length; i += CHUNK_SIZE) {
-        await twilioClient.messages.create({ from: To, to: From, body: `💡 事實查核與解析：\n\n${factCheckResult.substring(i, i + CHUNK_SIZE)}` });
+        await messagingClient.sendText(`💡 事實查核與解析：\n\n${factCheckResult.substring(i, i + CHUNK_SIZE)}`);
       }
     }
 
     if (!skipVoice) {
       if (factCheckPart) {
-        await generateAndSendVoice(factCheckPart, twilioClient, From, To, "🎙️ 正在生成查核結果語音...");
+        await generateAndSendVoice(factCheckPart, messagingClient, "🎙️ 正在生成查核結果語音...");
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
       if (explanationPart) {
-        await generateAndSendVoice(explanationPart, twilioClient, From, To, "🎙️ 正在生成知識點解析語音...");
+        await generateAndSendVoice(explanationPart, messagingClient, "🎙️ 正在生成知識點解析語音...");
       }
     }
 
@@ -326,7 +315,7 @@ CRITICAL: TRADITIONAL CHINESE only. Use Google Search grounding.`;
     const urlMatch = Body.match(/(https?:\/\/[^\s]+)/);
     if (urlMatch) {
       const targetUrl = urlMatch[0];
-      await twilioClient.messages.create({ from: To, to: From, body: "📖 正在為您讀取網頁內容並準備導讀... 請稍候 ⏳" });
+      await messagingClient.sendText("📖 正在為您讀取網頁內容並準備導讀... 請稍候 ⏳");
       return { handled: true, linkUrl: targetUrl };
     }
   }
@@ -334,15 +323,11 @@ CRITICAL: TRADITIONAL CHINESE only. Use Google Search grounding.`;
   // 3. Handle Audio (Task Sync) 
   if (MediaUrl0 && MediaContentType0 && (MediaContentType0.includes('audio') || MediaContentType0.includes('video'))) {
     console.log(`Processing voice message from ${From}`);
-    await twilioClient.messages.create({ from: To, to: From, body: "正在處理您的廣東話語音訊息... 請稍候 ⏳" });
+    await messagingClient.sendText("正在處理您的廣東話語音訊息... 請稍候 ⏳");
 
-    const audioResponse = await axios({
-      method: 'get', url: MediaUrl0, responseType: 'arraybuffer',
-      auth: { username: TWILIO_ACCOUNT_SID, password: TWILIO_AUTH_TOKEN }
-    });
-    const buffer = Buffer.from(audioResponse.data);
+    const buffer = await messagingClient.downloadMedia(MediaUrl0);
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
     const prompt = `Extract tasks from this message. TRADITIONAL CHINESE only. JSON format: { transcription: "...", tasks: [{ title: "...", due_datetime: "ISO", description: "..." }] }. Current: ${new Date().toISOString()}`;
     
     const response = await axios.post(geminiUrl, {
@@ -359,7 +344,7 @@ CRITICAL: TRADITIONAL CHINESE only. Use Google Search grounding.`;
           requestBody: { title: task.title, notes: `Transcribed: ${data.transcription}\n\n${task.description || ''}`, due: task.due_datetime || undefined }
         });
       }
-      await twilioClient.messages.create({ from: To, to: From, body: `✅ 任務已添加到 Google Tasks！\n\n錄音內容：${data.transcription}` });
+      await messagingClient.sendText(`✅ 任務已添加到 Google Tasks！\n\n錄音內容：${data.transcription}`);
     }
     return true;
   }
@@ -367,7 +352,7 @@ CRITICAL: TRADITIONAL CHINESE only. Use Google Search grounding.`;
   return { handled: false };
 }
 
-async function processLink(targetUrl, From, To, twilioClient, config, redis, cachedResult = null) {
+async function processLink(targetUrl, From, messagingClient, config, redis, cachedResult = null) {
   const { GEMINI_API_KEY } = config;
   try {
     let finalContent = null;
@@ -397,7 +382,7 @@ async function processLink(targetUrl, From, To, twilioClient, config, redis, cac
 
 內容如下：
 ${combinedText}`;
-        const prioritizedPairs = await getPrioritizedPairs(['gemini-2.0-flash', 'gemini-flash-latest'], GEMINI_API_KEY.split(',').map(k => k.trim()), redis);
+        const prioritizedPairs = await getPrioritizedPairs(['gemini-1.5-flash', 'gemini-flash-latest'], GEMINI_API_KEY.split(',').map(k => k.trim()), redis);
         for (const { model, key } of prioritizedPairs) {
           try {
             const resp = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, { contents: [{ parts: [{ text: prompt }] }] }, { timeout: 45000 });
@@ -414,18 +399,18 @@ ${combinedText}`;
     }
     const CHUNK_SIZE = 1500;
     for (let i = 0; i < finalContent.length; i += CHUNK_SIZE) {
-      await twilioClient.messages.create({ from: To, to: From, body: finalContent.substring(i, i + CHUNK_SIZE) });
+      await messagingClient.sendText(finalContent.substring(i, i + CHUNK_SIZE));
     }
-    await generateAndSendVoice(finalContent, twilioClient, From, To, "🎙️ 正在生成語音導讀...");
+    await generateAndSendVoice(finalContent, messagingClient, "🎙️ 正在生成語音導讀...");
     return { handled: true, result: finalContent };
   } catch (err) {
     console.error('ProcessLink Err:', err.message);
-    await twilioClient.messages.create({ from: To, to: From, body: `❌ 導讀失敗: ${err.message}` });
+    await messagingClient.sendText(`❌ 導讀失敗: ${err.message}`);
     return { handled: false };
   }
 }
 
-async function processDeepDive(keyword, context, From, To, twilioClient, config, redis, skipVoice = false, skipText = false, cachedResult = null) {
+async function processDeepDive(keyword, context, From, messagingClient, config, redis, skipVoice = false, skipText = false, cachedResult = null) {
   const { GEMINI_API_KEY } = config;
 
   const prompt = `你是一個專業的教育助手。用戶對以下主題中的「${keyword}」感興趣，請為他進行深入淺出的解析。
@@ -472,10 +457,7 @@ CRITICAL: TRADITIONAL CHINESE only.`;
             const nextName = model.includes('2.0') ? 'Gemini 2.0' : model.includes('lite') ? '1.5 Lite' : '1.5 Flash';
             
             try {
-              await twilioClient.messages.create({
-                from: To, to: From,
-                body: `🤖 [系統提示] ${currentName} (所有金鑰) 忙碌中，正嘗試切換至 ${nextName}... ⏳`
-              });
+              await messagingClient.sendText(`🤖 [系統提示] ${currentName} (所有金鑰) 忙碌中，正嘗試切換至 ${nextName}... ⏳`);
             } catch (notifyErr) {}
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
@@ -503,10 +485,7 @@ CRITICAL: TRADITIONAL CHINESE only.`;
               const nextPair = prioritizedPairs[currentPairIdx + 1];
               if (!skipText && nextPair.model === model) {
                 try {
-                  await twilioClient.messages.create({
-                    from: To, to: From,
-                    body: `🤖 [系統提示] Key ${String.fromCharCode(65 + kIdx)} 忙碌，正切換至 Key ${String.fromCharCode(65 + nextPair.index)}... ⏳`
-                  });
+                  await messagingClient.sendText(`🤖 [系統提示] Key ${String.fromCharCode(65 + kIdx)} 忙碌，正切換至 Key ${String.fromCharCode(65 + nextPair.index)}... ⏳`);
                 } catch (notifyErr) {}
               }
               await new Promise(resolve => setTimeout(resolve, skipText ? 100 : 1500));
@@ -536,11 +515,11 @@ CRITICAL: TRADITIONAL CHINESE only.`;
     if (!skipText) {
       const CHUNK_SIZE = 1500;
       for (let i = 0; i < result.length; i += CHUNK_SIZE) {
-        await twilioClient.messages.create({ from: To, to: From, body: `📚 ${keyword} 深度解析：\n\n${result.substring(i, i + CHUNK_SIZE)}` });
+        await messagingClient.sendText(`📚 ${keyword} 深度解析：\n\n${result.substring(i, i + CHUNK_SIZE)}`);
       }
     }
 
-    if (!skipVoice && explanationPart) await generateAndSendVoice(explanationPart, twilioClient, From, To, "🎙️ 正在生成深度解析語音...");
+    if (!skipVoice && explanationPart) await generateAndSendVoice(explanationPart, messagingClient, "🎙️ 正在生成深度解析語音...");
 
     if (redis && menuPart) {
       const keywords = [];
@@ -556,7 +535,7 @@ CRITICAL: TRADITIONAL CHINESE only.`;
     return { handled: true, result };
   } catch (error) {
     console.error('Deep Dive Error:', error.message);
-    if (!skipText) await twilioClient.messages.create({ from: To, to: From, body: "❌ 深入解析時發生錯誤，請稍後再試。" });
+    if (!skipText) await messagingClient.sendText("❌ 深入解析時發生錯誤，請稍後再試。");
     return false;
   }
 }

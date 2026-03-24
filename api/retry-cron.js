@@ -32,6 +32,8 @@ module.exports = async (req, res) => {
   }
 
   const twilioClient = twilio(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN);
+  const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const { TwilioMessagingClient, TelegramMessagingClient } = require('./lib/messaging');
   
   // Auth setup
   let formattedKey = config.GOOGLE_PRIVATE_KEY.includes('\\n') ? config.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : config.GOOGLE_PRIVATE_KEY;
@@ -66,9 +68,9 @@ module.exports = async (req, res) => {
       continue;
     }
     
-    const task = JSON.parse(rawPayload);
-    if (!task.nextRun || now >= task.nextRun) {
-      dueTasks.push({ code, task });
+    const taskData = JSON.parse(rawPayload);
+    if (!taskData.nextRun || now >= taskData.nextRun) {
+      dueTasks.push({ code, task: taskData });
     }
   }
 
@@ -104,16 +106,18 @@ module.exports = async (req, res) => {
 
   const taskKey = `retry:task:${code}`;
 
-  // 5. Process the locked task
-  console.log(`Attempting single retry #${task.attempts || 1} for code ${code}...`);
+  // 5. Instantiate correct messaging client
+  const messagingClient = (task.platform === 'telegram')
+    ? new TelegramMessagingClient(TELEGRAM_BOT_TOKEN, task.From)
+    : new TwilioMessagingClient(twilioClient, task.To, task.From);
+
+  // 6. Process the locked task
+  console.log(`Attempting single retry #${task.attempts || 1} for code ${code} (Platform: ${task.platform || 'whatsapp'})...`);
   
   // Notification: Retry Startup (skip for background voice tasks)
   if (!task.taskType?.startsWith('voice-')) {
     try {
-      await twilioClient.messages.create({
-        from: task.To, to: task.From,
-        body: `🤖 [系統提示] 任務編號：${code} 正重新嘗試查核... ⏳`
-      });
+      await messagingClient.sendText(`🤖 [系統提示] 任務編號：${code} 正重新嘗試查核... ⏳`);
     } catch (notifyErr) {
       console.error('Retry Start Notification Failed:', notifyErr.message);
     }
@@ -122,26 +126,26 @@ module.exports = async (req, res) => {
   try {
     if (task.taskType === 'voice-fact-check') {
       console.log(`Processing background voice for fact-check ${code}`);
-      await processRequest(task, twilioClient, tasksApi, procConfig, redis, false, true, task.cachedResult); // skipVoice: false, skipText: true, cachedResult
+      await processRequest(task, messagingClient, tasksApi, procConfig, redis, false, true, task.cachedResult); // skipVoice: false, skipText: true, cachedResult
       await redis.del(taskKey);
       await redis.srem('retry:pending', code);
       processed++;
     } else if (task.taskType === 'web-link') {
       console.log(`Processing background web-link for ${code}`);
-      await processLink(task.linkUrl, task.From, task.To, twilioClient, procConfig, redis, task.cachedResult);
+      await processLink(task.linkUrl, task.From, messagingClient, procConfig, redis, task.cachedResult);
       await redis.del(taskKey);
       await redis.srem('retry:pending', code);
       processed++;
     } else if (task.taskType === 'voice-deep-dive') {
       console.log(`Processing background voice for deep-dive ${code}`);
       const { keyword, context } = task;
-      await processDeepDive(keyword, context, task.From, task.To, twilioClient, procConfig, redis, false, true, task.cachedResult); // skipVoice: false, skipText: true, cachedResult
+      await processDeepDive(keyword, context, task.From, messagingClient, procConfig, redis, false, true, task.cachedResult); // skipVoice: false, skipText: true, cachedResult
       await redis.del(taskKey);
       await redis.srem('retry:pending', code);
       processed++;
     } else {
-      const success = await processRequest(task, twilioClient, tasksApi, procConfig, redis);
-      if (success) {
+      const result = await processRequest(task, messagingClient, tasksApi, procConfig, redis);
+      if (result && result.handled) {
         console.log(`Successfully processed code ${code}.`);
         await redis.del(taskKey);
         await redis.srem('retry:pending', code);
@@ -161,10 +165,7 @@ module.exports = async (req, res) => {
 
       // Notification: Rescheduling
       try {
-        await twilioClient.messages.create({
-          from: task.To, to: task.From,
-          body: `⚠️ [系統提示] 任務編號：${code} 額度仍忙碌中，將在 ${delayMin} 分鐘後再次嘗試。`
-        });
+        await messagingClient.sendText(`⚠️ [系統提示] 任務編號：${code} 額度仍忙碌中，將在 ${delayMin} 分鐘後再次嘗試。`);
       } catch (notifyErr) {
         console.error('Rescheduling Notification Failed:', notifyErr.message);
       }
@@ -174,10 +175,9 @@ module.exports = async (req, res) => {
       await redis.del(taskKey);
       await redis.srem('retry:pending', code);
       
-      await twilioClient.messages.create({
-        from: task.To, to: task.From,
-        body: `❌ 任務編號：${code} 發生不可修復的錯誤，已停止重新嘗試。\n錯誤訊息：${err.message}`
-      });
+      try {
+        await messagingClient.sendText(`❌ 任務編號：${code} 發生不可修復的錯誤，已停止重新嘗試。\n錯誤訊息：${err.message}`);
+      } catch (notifyErr) {}
     }
   }
 
