@@ -13,6 +13,12 @@ const { processRequest, processDeepDive } = require('./api/lib/processor');
 const path = require('path');
 require('dotenv').config();
 
+// One-time diagnostic: log server region
+const axios = require('axios');
+axios.get('https://ifconfig.me', { timeout: 3000 }).then(r => {
+  console.log(`[Diagnostic] Server Public IP: ${r.data}`);
+}).catch(() => console.log('[Diagnostic] IP check failed'));
+
 const app = express();
 const port = process.env.PORT || 3000;
 
