@@ -8,45 +8,7 @@ const googleTTS = require('google-tts-api'); // Use existing dependency
 let GEMINI_API_KEY = ""; // Module-level key initialized in processRequest
 
 // Helper: Global (Model, Key) Priority Ordering
-async function getPrioritizedPairs(models, rawKeys, redis) {
-  const pairs = [];
-  for (const model of models) {
-    for (let i = 0; i < rawKeys.length; i++) {
-      pairs.push({ model, key: rawKeys[i], index: i });
-    }
-  }
-
-  if (!redis) return pairs.map(p => ({ ...p, status: 'UNTRIED', time: 0 }));
-
-  const prioritized = await Promise.all(pairs.map(async p => {
-    const rawStatus = await redis.get(`key_status:${p.model}:${p.key}`) || 'UNTRIED:0';
-    const [status, timeStr] = rawStatus.split(':');
-    const time = parseInt(timeStr, 10) || 0;
-    return { ...p, status, time };
-  }));
-
-  // Priority: WORKING (0) > UNTRIED (1) > FAILED (2)
-  const priorityMap = { 'WORKING': 0, 'UNTRIED': 1, 'FAILED': 2 };
-  const modelValue = {
-    'gemini-2.0-flash': 100,
-    'gemini-1.5-flash': 80,
-    'gemini-1.5-flash-002': 70,
-    'gemini-1.5-flash-8b': 60,
-    'gemini-1.5-pro': 50
-  };
-
-  return prioritized.sort((a, b) => {
-    if (priorityMap[a.status] !== priorityMap[b.status]) {
-      return priorityMap[a.status] - priorityMap[b.status];
-    }
-    // For WORKING, use MOST RECENT success first (Latest timestamp)
-    if (a.status === 'WORKING') return b.time - a.time;
-    // For FAILED, use OLDEST failure first (more recovery time)
-    if (a.status === 'FAILED') return a.time - b.time;
-    // Default: more capable model first
-    return (modelValue[b.model] || 0) - (modelValue[a.model] || 0);
-  });
-}
+// Deprecated: Logic moved inside callGeminiApi rotation
 
 // Helper: Shorten URL using is.gd
 async function shortenUrl(longUrl) {
@@ -173,34 +135,52 @@ async function uploadToCatbox(buffer, mimeType, filename) {
 }
 
 // Helper: Centralized Gemini API Call with v1/v1beta fallback
-async function callGeminiApi(model, prompt, key, mediaData = null, tools = null) {
-  let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  const payload = {
-    contents: [{ 
-      parts: mediaData ? [{ text: prompt }, mediaData] : [{ text: prompt }] 
-    }]
-  };
+async function callGeminiApi(models, prompt, keysString, mediaData = null, tools = null, onRetry = null) {
+  const apiKeys = keysString.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
+  const modelList = Array.isArray(models) ? models : [models];
   
-  if (tools) {
-    payload.tools = tools;
-  }
+  console.log(`[callGeminiApi] Starting rotation: ${modelList.length} models, ${apiKeys.length} keys.`);
 
-  console.log(`[callGeminiApi] model: ${model}, tools: ${tools ? 'YES' : 'NO'}, Prompt prefix: ${prompt.substring(0, 50)}...`);
+  for (let mIdx = 0; mIdx < modelList.length; mIdx++) {
+    const model = modelList[mIdx];
+    if (onRetry && mIdx > 0) await onRetry(`切換至模型 ${model}`);
 
-  try {
-    return await axios.post(geminiUrl, payload, { 
-      timeout: 30000, headers: { 'x-goog-api-key': key } 
-    });
-  } catch (err) {
-    if (err.response?.status === 404) {
-      console.warn(`⚠️ ${model} 404 on v1beta, trying v1...`);
-      geminiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
-      return await axios.post(geminiUrl, payload, { 
-        timeout: 30000, headers: { 'x-goog-api-key': key } 
-      });
+    for (let i = 0; i < apiKeys.length; i++) {
+        const key = apiKeys[i];
+        let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+        const payload = {
+          contents: [{ 
+            parts: mediaData ? [{ text: prompt }, mediaData] : [{ text: prompt }] 
+          }]
+        };
+        if (tools) payload.tools = tools;
+
+        console.log(`[callGeminiApi] ${model} | Key #${i+1}/${apiKeys.length} | Attempting...`);
+
+        try {
+          const response = await axios.post(geminiUrl, payload, { 
+            timeout: 30000, headers: { 'x-goog-api-key': key } 
+          });
+          console.log(`[callGeminiApi] SUCCESS with ${model} (Key #${i+1})`);
+          return response.data;
+        } catch (err) {
+          const status = err.response?.status;
+          console.warn(`[callGeminiApi] FAILED with ${model} (Key #${i+1}): HTTP ${status || 'TIMEOUT'}`);
+
+          if (status === 404) {
+            console.warn(`⚠️ ${model} 404, trying v1 fallback...`);
+            let v1Url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
+            try { return await axios.post(v1Url, payload, { timeout: 30000, headers: { 'x-goog-api-key': key } }); } catch (e) {}
+          }
+
+          if (status === 429) {
+            if (onRetry && i < apiKeys.length - 1) await onRetry(`Key #${i+1} 額度用盡，正嘗試切換金鑰...`);
+            continue;
+          }
+        }
     }
-    throw err;
   }
+  throw new Error(`All Gemini keys (${apiKeys.length}) across ${modelList.length} models failed (429/Timeout).`);
 }
 
 /**
@@ -263,69 +243,18 @@ async function processRequest(payload, messagingClient, tasksApi, config, redis,
 
 CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁使用書面語（例如用「係」唔好用「是」，用「佢地」唔好用「他們」）。Use Google Search grounding.`;
 
-    const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
-    let factCheckResult = null;
-    let successModel = null;
-
-    const politeModelNames = {
-      'gemini-2.0-flash': 'Gemini 2.0',
-      'gemini-1.5-flash': '1.5 Flash',
-      'gemini-1.5-flash-002': '1.5 Flash V2',
-      'gemini-1.5-flash-8b': '1.5 Flash 8B'
-    };
-
     if (cachedResult) {
       console.log('♻️ Using cached Gemini result for consistency.');
       factCheckResult = cachedResult;
       successModel = 'CACHED';
     } else {
-      const prioritizedPairs = await getPrioritizedPairs(models, apiKeys, redis);
-      let currentIterModel = null;
-
-      for (const { model, key, index: kIdx, status: startStatus } of prioritizedPairs) {
-        try {
-          if (currentIterModel && model !== currentIterModel && !factCheckResult && !skipText) {
-            const oldName = politeModelNames[currentIterModel] || currentIterModel;
-            const newName = politeModelNames[model] || model;
-            try {
-              await messagingClient.sendText(`🤖 [系統提示] ${oldName} (所有金鑰) 忙碌中，正嘗試切換至 ${newName}... ⏳`);
-            } catch (notifyErr) {}
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-          currentIterModel = model;
-
-          console.log(`📡 Attempting ${model} with Key ${String.fromCharCode(65 + kIdx)} (Status: ${startStatus})`);
-          
-          const mediaData = { inline_data: { mime_type: MediaContentType0, data: imgBuffer.toString("base64") } };
-          const geminiResponse = await callGeminiApi(model, prompt, key, mediaData, [{ google_search: {} }]);
-
-          factCheckResult = geminiResponse.data.candidates[0].content.parts.map(p => p.text || '').join('\n').trim();
-          if (factCheckResult) {
-            successModel = model;
-            if (redis) await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
-            break;
-          }
-        } catch (err) {
-          const status = err.response?.status;
-          if (status === 429) {
-            if (redis) await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', 600);
-            
-            const currentPairIdx = prioritizedPairs.findIndex(p => p.model === model && p.key === key);
-            if (currentPairIdx < prioritizedPairs.length - 1) {
-              const nextPair = prioritizedPairs[currentPairIdx + 1];
-              if (!skipText && nextPair.model === model) {
-                try {
-                  await messagingClient.sendText(`🤖 [系統提示] Key ${String.fromCharCode(65 + kIdx)} 額度用盡，正嘗試切換至 Key ${String.fromCharCode(65 + nextPair.index)}... ⏳`);
-                } catch (notifyErr) {}
-              }
-              await new Promise(resolve => setTimeout(resolve, skipText ? 100 : 1500));
-              continue; 
-            }
-          } else {
-            console.error(`Error with ${model} Key ${String.fromCharCode(65 + kIdx)}:`, err.message);
-            continue;
-          }
-        }
+      const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, mediaData, [{ google_search: {} }], async (msg) => {
+        try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) {}
+      });
+      
+      factCheckResult = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (factCheckResult) {
+        successModel = "Gemini"; // callGeminiApi logs specific model
       }
     }
 
@@ -778,27 +707,11 @@ CRITICAL: TRADITIONAL CHINESE only. 請全程使用香港廣東話口語 (Hong K
 內容如下：
 ${combinedText}`;
 
-      const prioritizedPairs = await getPrioritizedPairs(models, apiKeys, redis);
-      for (const { model, key, index: kIdx } of prioritizedPairs) {
-        try {
-          console.log(`📡 Link Extract: Attempting ${model} with Key ${String.fromCharCode(65 + kIdx)}`);
-          const resp = await callGeminiApi(model, prompt, key, null, null);
-          const result = resp.data.candidates[0].content.parts.map(p => p.text || '').join('\n').trim();
-          if (result) {
-            finalContent = result;
-            successModel = model;
-            if (redis) await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
-            break;
-          }
-        } catch (e) { 
-          const status = e.response?.status;
-          if (status === 429) {
-            if (redis) await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', 600);
-            console.warn(`Link Key ${String.fromCharCode(65 + kIdx)} hit quota, rotating...`);
-          } else {
-            console.error(`Link extract error ${model}:`, e.message); 
-          }
-        }
+      // Using centralized callGeminiApi with rotation
+      const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, null, null);
+      finalContent = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (finalContent) {
+        successModel = "Gemini";
       }
     }
     
@@ -905,54 +818,12 @@ CRITICAL: TRADITIONAL CHINESE only.`;
       result = cachedResult;
       successModel = 'CACHED';
     } else {
-      const prioritizedPairs = await getPrioritizedPairs(models, apiKeys, redis);
-      let currentIterModel = null;
-      
-      for (const { model, key, index: kIdx, status: startStatus } of prioritizedPairs) {
-        try {
-          if (currentIterModel && model !== currentIterModel && !result && !skipText) {
-            const currentName = currentIterModel.includes('2.0') ? 'Gemini 2.0' : currentIterModel.includes('lite') ? '1.5 Lite' : '1.5 Flash';
-            const nextName = model.includes('2.0') ? 'Gemini 2.0' : model.includes('lite') ? '1.5 Lite' : '1.5 Flash';
-            
-            try {
-              await messagingClient.sendText(`🤖 [系統提示] ${currentName} (所有金鑰) 忙碌中，正嘗試切換至 ${nextName}... ⏳`);
-            } catch (notifyErr) {}
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-          currentIterModel = model;
-
-          console.log(`📡 Attempting Deep Dive with model: ${model} using Key ${String.fromCharCode(65 + kIdx)} (Status: ${startStatus})`);
-          const geminiResponse = await callGeminiApi(model, prompt, key, null, null);
-
-          result = geminiResponse.data.candidates[0].content.parts.map(p => p.text || '').join('\n').trim();
-          if (result) {
-            successModel = model;
-            if (redis) await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
-            break;
-          }
-        } catch (err) {
-          const errStatus = err.response?.status;
-          const errData = err.response?.data;
-          console.error(`ERROR (${model}): Status ${errStatus}, Data:`, JSON.stringify(errData));
-          if (errStatus === 429) {
-            if (redis) await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', 600);
-            
-            const currentPairIdx = prioritizedPairs.findIndex(p => p.model === model && p.key === key);
-            if (currentPairIdx < prioritizedPairs.length - 1) {
-              const nextPair = prioritizedPairs[currentPairIdx + 1];
-              if (!skipText && nextPair.model === model) {
-                try {
-                  await messagingClient.sendText(`🤖 [系統提示] Key ${String.fromCharCode(65 + kIdx)} 忙碌，正切換至 Key ${String.fromCharCode(65 + nextPair.index)}... ⏳`);
-                } catch (notifyErr) {}
-              }
-              await new Promise(resolve => setTimeout(resolve, skipText ? 100 : 1500));
-              continue;
-            }
-          } else {
-            console.error(`Deep Dive ${model} error:`, err.message);
-            continue; 
-          }
-        }
+      const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, null, null, async (msg) => {
+        try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) {}
+      });
+      result = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (result) {
+        successModel = "Gemini";
       }
     }
     
