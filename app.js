@@ -185,7 +185,7 @@ app.get('/api/dashboard/registration-options', async (req, res) => {
     const options = await generateRegistrationOptions({
       rpName: RP_NAME,
       rpID: RP_ID,
-      userID: 'admin',
+      userID: Buffer.from('admin'),
       userName: 'Admin User',
       attestationType: 'none',
       authenticatorSelection: {
