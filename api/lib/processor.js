@@ -738,14 +738,25 @@ async function processLink(targetUrl, From, messagingClient, config, redis, cach
       $('script, style, nav, footer, header, .ads, #sidebar').remove();
       const title = $('title').text().trim() || '網頁內容';
       const paragraphs = [];
-      $('p').each((i, el) => { 
+      $('p, div.post-body, .article-content, section').each((i, el) => { 
         const txt = $(el).text().trim(); 
-        if (txt.length > 20) paragraphs.push(txt); 
+        if (txt.length > 30) paragraphs.push(txt); 
       });
       
-      let rawText = paragraphs.slice(0, 30).join('\n\n').trim(); 
-      if (rawText.length < 100) rawText = $('body').text().substring(0, 8000).trim();
+      let rawText = paragraphs.slice(0, 40).join('\n\n').trim(); 
+      console.log(`[processLink] Extracted ${paragraphs.length} blocks. Paragraph length: ${rawText.length}`);
+      
+      if (rawText.length < 200) {
+        console.warn('[processLink] Low paragraph count, falling back to body text.');
+        rawText = $('body').text().replace(/\s+/g, ' ').trim().substring(0, 10000);
+      }
+      
       const combinedText = `標題：${title}\n\n${rawText}`.substring(0, 15000);
+      console.log(`[processLink] Final combinedText length: ${combinedText.length}`);
+
+      if (combinedText.length < 50) {
+        throw new Error("未能從網頁提取足夠內容。可能是動態加載或存取被拒。");
+      }
       
       const prompt = `你是一個專業的內容提取與教育助手。請對輸入內容進行全文提取與解析。
 輸出必須嚴格包含以下兩個部分，並使用指定的分隔符號隔開：
