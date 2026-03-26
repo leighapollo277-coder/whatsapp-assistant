@@ -21,6 +21,7 @@
     "@simplewebauthn/server": "^13.3.0",
     "axios": "^1.13.6",
     "cheerio": "^1.2.0",
+    "cookie-parser": "^1.4.7",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "form-data": "^4.0.5",
