@@ -25,7 +25,7 @@ async function shortenUrl(longUrl) {
 async function generateAndSendVoice(text, messagingClient, statusPrefix = "🎙️ 正在準備廣東話語音總結...", isLink = false, partLabel = "") {
   try {
     if (!text) return false;
-    
+
     // Add part label to status if provided (e.g. " (第一部分)")
     const fullStatus = partLabel ? `${statusPrefix} (${partLabel})` : statusPrefix;
     if (fullStatus) await messagingClient.sendText(fullStatus);
@@ -36,14 +36,14 @@ async function generateAndSendVoice(text, messagingClient, statusPrefix = "🎙�
       .trim();
 
     console.log(`[generateAndSendVoice] Text: ${cleanText.substring(0, 100)}...`);
-    
+
     // Strict limit for individual segments to avoid 10s timeout
-    const charLimit = isLink ? 1000 : 700; 
+    const charLimit = isLink ? 1000 : 700;
     const finalCleanText = cleanText.substring(0, charLimit);
 
     if (finalCleanText.length < 5) return false;
 
-    const tmpAudioPath = `/tmp/v_${Date.now()}_${Math.floor(Math.random()*1000)}.mp3`;
+    const tmpAudioPath = `/tmp/v_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp3`;
     const playbackRate = isLink ? '+40%' : '+20%'; // High speed for links to stay under 10s
     const synthTimeout = isLink ? 9500 : 25000;
 
@@ -56,24 +56,24 @@ async function generateAndSendVoice(text, messagingClient, statusPrefix = "🎙�
       timeout: synthTimeout,
       saveSubtitles: false
     });
-    
+
     try {
       await Promise.race([
         tts.ttsPromise(finalCleanText, tmpAudioPath),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), synthTimeout))
       ]);
     } catch (ttsErr) {
-       console.warn(`TTS Failed (${isLink ? 'Link' : 'Cmd'}):`, ttsErr.message);
-       // Last resort fallback
-       return false;
+      console.warn(`TTS Failed (${isLink ? 'Link' : 'Cmd'}):`, ttsErr.message);
+      // Last resort fallback
+      return false;
     }
-    
+
     if (fs.existsSync(tmpAudioPath) && fs.statSync(tmpAudioPath).size > 500) {
       const form = new FormData();
       form.append('reqtype', 'fileupload');
-      const catboxFileName = `v_${Date.now()}_${Math.floor(Math.random()*1000)}.mp3`;
+      const catboxFileName = `v_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp3`;
       form.append('fileToUpload', fs.createReadStream(tmpAudioPath), { filename: catboxFileName });
-      
+
       const uploadResp = await axios.post('https://catbox.moe/user/api.php', form, {
         headers: form.getHeaders(), timeout: 15000
       });
@@ -82,7 +82,7 @@ async function generateAndSendVoice(text, messagingClient, statusPrefix = "🎙�
         const now = new Date().toLocaleTimeString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false });
         const caption = partLabel ? `🎙️ ${partLabel} [${now}]` : `🎙️ [${now}]`;
         await messagingClient.sendVoice(mediaUrl, caption);
-        try { fs.unlinkSync(tmpAudioPath); } catch (e) {}
+        try { fs.unlinkSync(tmpAudioPath); } catch (e) { }
         return true;
       }
     }
@@ -124,7 +124,7 @@ async function uploadToCatbox(buffer, mimeType, filename) {
     form.append('fileToUpload', buffer, { filename: filename, contentType: mimeType });
     const response = await axios.post('https://catbox.moe/user/api.php', form, {
       headers: form.getHeaders(),
-      timeout: 15000 
+      timeout: 15000
     });
     console.log(`Successfully uploaded photo to Catbox: ${response.data}`);
     return response.data;
@@ -140,7 +140,7 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
   const apiKeys = [...new Set(keysString.split(',')
     .map(k => k.trim().replace(/^"|"$/g, ''))
     .filter(k => k.length > 5))];
-  
+
   const modelList = Array.isArray(models) ? models : [models];
   const totalAttempts = modelList.length * apiKeys.length;
   const auditTrail = [];
@@ -153,13 +153,13 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
 
   for (let mIdx = 0; mIdx < modelList.length; mIdx++) {
     const model = modelList[mIdx];
-    
+
     for (let kIdx = 0; kIdx < apiKeys.length; kIdx++) {
       // Apply offset for round-robin
       const actualKIdx = (kIdx + keyOffset) % apiKeys.length;
       const key = apiKeys[actualKIdx];
       const keyShort = `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
-      
+
       // 3. Check Cumulative Timeout (45s)
       if (Date.now() - startTime > 45000) {
         throw new Error(`[callGeminiApi] Global timeout reached after ${auditTrail.length} attempts.`);
@@ -172,7 +172,7 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
           const [, timestamp] = status.split(':');
           const elapsed = Date.now() - parseInt(timestamp);
           if (elapsed < 1800000) { // 30 min cooldown
-            console.log(`[callGeminiApi] Skipping ${model} with Key ${actualKIdx+1} (In Cooldown)`);
+            console.log(`[callGeminiApi] Skipping ${model} with Key ${actualKIdx + 1} (In Cooldown)`);
             continue;
           }
         }
@@ -183,19 +183,19 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
       }
 
       let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-      
+
       // 5. Build Generic Payload
       const payloadContents = { text: prompt };
       const parts = [payloadContents];
-      
+
       if (mediaData) {
         // mediaData can be a Google-format object or a base64 string/buffer
         if (typeof mediaData === 'string' || Buffer.isBuffer(mediaData)) {
-           // Assume it's voice if it's a buffer/string and we are in voice context? 
-           // Better to let caller pass the exact structure but here we handle common cases.
-           parts.push({ inline_data: { mime_type: 'audio/mp3', data: mediaData.toString('base64') } });
+          // Assume it's voice if it's a buffer/string and we are in voice context? 
+          // Better to let caller pass the exact structure but here we handle common cases.
+          parts.push({ inline_data: { mime_type: 'audio/mp3', data: mediaData.toString('base64') } });
         } else {
-           parts.push(mediaData);
+          parts.push(mediaData);
         }
       }
 
@@ -205,13 +205,13 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
       console.log(`[callGeminiApi] Attempt ${auditTrail.length + 1}: ${model} | Key #${actualKIdx + 1}`);
 
       try {
-        const response = await axios.post(geminiUrl, payload, { 
-          timeout: 30000, 
-          headers: { 'Content-Type': 'application/json' } 
+        const response = await axios.post(geminiUrl, payload, {
+          timeout: 30000,
+          headers: { 'Content-Type': 'application/json' }
         });
 
         const data = response.data;
-        
+
         // 6. Safety Filter Detection (200 OK but blocked)
         const candidate = data.candidates?.[0];
         if (candidate?.finishReason === 'SAFETY') {
@@ -225,14 +225,14 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
 
         console.log(`[callGeminiApi] SUCCESS with ${model} (Key #${actualKIdx + 1})`);
         if (redis) await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
-        
+
         return data;
 
       } catch (err) {
         const status = err.response?.status;
         const errMsg = err.response?.data?.error?.message || err.message;
         console.warn(`[callGeminiApi] FAILED: ${model} | Key #${actualKIdx + 1} | HTTP ${status || 'ERR'} | ${errMsg}`);
-        
+
         auditTrail.push({ model, keyIndex: actualKIdx + 1, status, error: errMsg });
 
         // Update Redis Health on failure
@@ -244,10 +244,10 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
         if (status === 404 || status === 400) {
           console.warn(`⚠️ [callGeminiApi] ${model} ${status} on v1beta, trying v1 fallback...`);
           let v1Url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
-          
+
           // CRITICAL: Many v1 endpoints do not support 'tools' (Google Search)
           const v1Payload = { contents: payload.contents };
-          
+
           try {
             const v1Res = await axios.post(v1Url, v1Payload, { timeout: 15000 });
             if (v1Res.data.candidates?.[0]?.content) {
@@ -277,7 +277,7 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
     }
   }
 
-  throw new Error(`All attempts exhausted. Tried ${auditTrail.length} combinations. Last error: ${auditTrail[auditTrail.length-1]?.error || 'Unknown'}`);
+  throw new Error(`All attempts exhausted. Tried ${auditTrail.length} combinations. Last error: ${auditTrail[auditTrail.length - 1]?.error || 'Unknown'}`);
 }
 
 /**
@@ -286,7 +286,7 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
 async function processRequest(payload, messagingClient, tasksApi, config, redis, skipVoice = false, skipText = false, cachedResult = null) {
   // Initialize module-level GEMINI_API_KEY for all helpers
   GEMINI_API_KEY = config?.geminiKey || process.env.GEMINI_API_KEY || "";
-  
+
   const { Body, From, MediaUrl0, MediaContentType0, platform } = payload;
   const GOOGLE_TASK_LIST_ID = (config.GOOGLE_TASK_LIST_ID || "").trim();
   const GOOGLE_SERVICE_ACCOUNT_EMAIL = (config.GOOGLE_SERVICE_ACCOUNT_EMAIL || "").trim();
@@ -313,8 +313,8 @@ async function processRequest(payload, messagingClient, tasksApi, config, redis,
     const models = [
       'gemini-2.0-flash',
       'gemini-2.0-flash-lite',
+      'gemini-flash-lite-latest',
       'gemini-1.5-flash-latest',
-      'gemini-1.5-flash-8b-latest',
       'gemini-1.5-flash-002',
       'gemini-1.5-pro-latest'
     ];
@@ -347,9 +347,9 @@ CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁�
     } else {
       const mediaData = { inline_data: { mime_type: MediaContentType0, data: imgBuffer.toString('base64') } };
       const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, mediaData, [{ google_search: {} }], async (msg) => {
-        try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) {}
+        try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) { }
       }, redis);
-      
+
       factCheckResult = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
       if (factCheckResult) {
         successModel = "Gemini"; // callGeminiApi logs specific model
@@ -373,16 +373,16 @@ CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁�
     let factCheckPart = factCheckResult;
     let explanationPart = "";
     let menuPart = "";
-    
+
     // Split logic using regex for robustness
     const analysisRegex = /---+\s*知識點解析\s*---+/;
     const readingRegex = /---+\s*延伸閱讀\s*---+/;
-    
+
     if (analysisRegex.test(factCheckResult)) {
       const parts = factCheckResult.split(analysisRegex);
       factCheckPart = parts[0].trim();
       const remainder = parts[1].trim();
-      
+
       if (readingRegex.test(remainder)) {
         const subParts = remainder.split(readingRegex);
         explanationPart = subParts[0].trim();
@@ -421,7 +421,7 @@ CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁�
         const menuState = { keywords, context: factCheckPart.substring(0, 500) };
         await redis.set(`learning_state:${From}:${menuId}`, JSON.stringify(menuState), 'EX', 86400); // 24h
         await redis.set(`latest_learning_state_id:${From}`, menuId, 'EX', 86400);
-        
+
         if (!skipText) {
           await messagingClient.sendText(`📌 [#${menuId}] 回覆數字深入學習，或輸入「${menuId} 數字」回顧舊話題。`);
         }
@@ -453,7 +453,7 @@ CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁�
     // Skip command detection if it's very likely just a URL-only link share to save AI rps
     const isLikelyPlainUrl = Body.trim().match(/^https?:\/\/[^\s]+$/);
     let intentData = { intent: 'NEW_NOTE' };
-    
+
     if (!isLikelyPlainUrl) {
       const intentPrompt = `分析以下文字內容並判斷用戶意圖。
 內容：${Body}
@@ -521,7 +521,7 @@ JSON Output: { "intent": "INTENT_NAME", "action": "動作（如 DELETE）" }`;
   // A. Handle Confirmation (User says "OK", "確定", "可以", etc.)
   if (session && Body && /^(ok|okay|可以|確定|确认|好|得|冇問題|無問題)$/i.test(Body.trim())) {
     await messagingClient.sendText("✅ 收到！正在為您整理並儲存至管理後台... ⏳");
-    
+
     // Extract Metadata (Category, Tasks)
     const nowHK = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
     const extractionPrompt = `分析以下內容並提取元數據。TRADITIONAL CHINESE only. 
@@ -533,7 +533,7 @@ JSON Output: {
 }
 Current Time: ${nowHK}`;
 
-    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-8b-latest'];
+    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-flash-lite-latest', 'gemini-1.5-flash-latest'];
     let extractionResult = null;
 
     try {
@@ -546,25 +546,25 @@ Current Time: ${nowHK}`;
     if (extractionResult) {
       const jsonMatch = extractionResult.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-         const metadata = JSON.parse(jsonMatch[0]);
-         const noteData = {
-           id: `note_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-           timestamp: nowHK,
-           original: session.originalTranscription,
-           refined: metadata.refined,
-           category: metadata.category,
-           tasks: metadata.tasks || [],
-           status: 'New'
-         };
+        const metadata = JSON.parse(jsonMatch[0]);
+        const noteData = {
+          id: `note_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          timestamp: nowHK,
+          original: session.originalTranscription,
+          refined: metadata.refined,
+          category: metadata.category,
+          tasks: metadata.tasks || [],
+          status: 'New'
+        };
 
-         if (redis) {
-           await redis.lpush(`notes:${From}`, JSON.stringify(noteData));
-           await redis.lpush('notes:all', JSON.stringify({ ...noteData, from: From }));
-           await redis.ltrim('notes:all', 0, 999);
-         }
+        if (redis) {
+          await redis.lpush(`notes:${From}`, JSON.stringify(noteData));
+          await redis.lpush('notes:all', JSON.stringify({ ...noteData, from: From }));
+          await redis.ltrim('notes:all', 0, 999);
+        }
 
-         await messagingClient.sendText(`🎉 已成功儲存！\n\n📌 分類：${metadata.category}\n📝 潤飾：${metadata.refined}`);
-         await redis.del(sessionKey);
+        await messagingClient.sendText(`🎉 已成功儲存！\n\n📌 分類：${metadata.category}\n📝 潤飾：${metadata.refined}`);
+        await redis.del(sessionKey);
       }
     }
     return { handled: true };
@@ -587,14 +587,14 @@ Current Time: ${nowHK}`;
 返回最新的完整內容版本（繁體中文）。`;
     }
 
-    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-8b-latest'];
+    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-flash-lite-latest', 'gemini-1.5-flash-latest'];
     let transcription = null;
 
     try {
       console.log(`🎙️ Attempting transcription with centralized rotation...`);
       const mediaData = { inline_data: { mime_type: MediaContentType0, data: buffer.toString("base64") } };
       const transcriptionResp = await callGeminiApi(models, transcriptionPrompt, GEMINI_API_KEY, mediaData, null, null, redis);
-      
+
       const transcriptionText = transcriptionResp.candidates[0].content.parts[0].text.trim();
       if (!transcriptionText) throw new Error("未能識別語音內容。");
 
@@ -636,7 +636,7 @@ JSON Output: { "intent": "INTENT_NAME", "query": "關鍵字（如果是查詢）
 ${listStr}`;
         const summaryResp = await callGeminiApi(['gemini-2.0-flash'], summaryPrompt, GEMINI_API_KEY, null, null, null, redis);
         const audioSummary = summaryResp.candidates[0].content.parts[0].text.trim();
-        
+
         await messagingClient.sendText(`📋 最近的筆記：\n\n${listStr}`);
         await generateAndSendVoice(audioSummary, messagingClient, "🎙️ 正在為您朗讀筆記總結...");
         return { handled: true };
@@ -703,14 +703,14 @@ async function processLink(targetUrl, From, messagingClient, config, redis, cach
     if (config?.GEMINI_API_KEY) {
       GEMINI_API_KEY = config.GEMINI_API_KEY;
     } else if (config?.geminiKey) {
-       GEMINI_API_KEY = config.geminiKey;
+      GEMINI_API_KEY = config.geminiKey;
     }
-    
+
     if (!GEMINI_API_KEY) {
       GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
     }
 
-    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-8b-latest', 'gemini-1.5-flash-002', 'gemini-1.5-pro-latest'];
+    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-flash-lite-latest', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-002', 'gemini-1.5-pro-latest'];
     const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
     let finalContent = null;
     let successModel = null;
@@ -722,31 +722,31 @@ async function processLink(targetUrl, From, messagingClient, config, redis, cach
     } else {
       const webResponse = await axios.get(targetUrl, { timeout: 20000, headers: { 'User-Agent': 'Mozilla/5.0' }, validateStatus: false });
       if (webResponse.status !== 200) throw new Error(`無法存取網頁 (HTTP ${webResponse.status})`);
-      
+
       const $ = cheerio.load(webResponse.data);
       $('script, style, nav, footer, header, .ads, #sidebar').remove();
       const title = $('title').text().trim() || '網頁內容';
       const paragraphs = [];
-      $('p, div.post-body, .article-content, section').each((i, el) => { 
-        const txt = $(el).text().trim(); 
-        if (txt.length > 30) paragraphs.push(txt); 
+      $('p, div.post-body, .article-content, section').each((i, el) => {
+        const txt = $(el).text().trim();
+        if (txt.length > 30) paragraphs.push(txt);
       });
-      
-      let rawText = paragraphs.slice(0, 40).join('\n\n').trim(); 
+
+      let rawText = paragraphs.slice(0, 40).join('\n\n').trim();
       console.log(`[processLink] Extracted ${paragraphs.length} blocks. Paragraph length: ${rawText.length}`);
-      
+
       if (rawText.length < 200) {
         console.warn('[processLink] Low paragraph count, falling back to body text.');
         rawText = $('body').text().replace(/\s+/g, ' ').trim().substring(0, 10000);
       }
-      
+
       const combinedText = `標題：${title}\n\n${rawText}`.substring(0, 15000);
       console.log(`[processLink] Final combinedText length: ${combinedText.length}`);
 
       if (combinedText.length < 50) {
         throw new Error("未能從網頁提取足夠內容。可能是動態加載或存取被拒。");
       }
-      
+
       const prompt = `你是一個專業的內容提取與教育助手。請對輸入內容進行全文提取與解析。
 輸出必須嚴格包含以下兩個部分，並使用指定的分隔符號隔開：
 
@@ -774,14 +774,14 @@ ${combinedText}`;
         successModel = "Gemini";
       }
     }
-    
+
     if (!finalContent) throw new Error("未能生成網頁總結。");
 
     // Split logic
     const readingRegex = /---+\s*延伸閱讀\s*---+/;
     let fullTextPart = finalContent;
     let menuPart = "";
-    
+
     if (readingRegex.test(finalContent)) {
       const parts = finalContent.split(readingRegex);
       fullTextPart = parts[0].replace(/【第一部分：全文內容】/, '').trim();
@@ -791,7 +791,7 @@ ${combinedText}`;
     // 1. Generate Voice for Entire Article (Chunked)
     const voiceChunks = chunkText(fullTextPart, 800);
     console.log(`Link Reading: Generated ${voiceChunks.length} voice chunks.`);
-    
+
     if (voiceChunks.length > 0) {
       await messagingClient.sendText("🎙️ 正在生成全文語音導讀... ⏳");
     }
@@ -816,7 +816,7 @@ ${combinedText}`;
         const menuState = { keywords, context: fullTextPart.substring(0, 500) };
         await redis.set(`learning_state:${From}:${menuId}`, JSON.stringify(menuState), 'EX', 86400); // 24h
         await redis.set(`latest_learning_state_id:${From}`, menuId, 'EX', 86400);
-        
+
         await messagingClient.sendText(`📖 內容提取完畢 (已發送語音)\n\n📌 [#${menuId}] 回覆數字深入學習，或輸入「${menuId} 數字」回顧舊話題：\n\n${menuPart}`);
       }
     }
@@ -836,7 +836,7 @@ async function processDeepDive(keyword, context, From, messagingClient, config, 
   } else if (config?.geminiKey) {
     GEMINI_API_KEY = config.geminiKey;
   }
-  
+
   if (!GEMINI_API_KEY) {
     GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
   }
@@ -844,12 +844,12 @@ async function processDeepDive(keyword, context, From, messagingClient, config, 
   const models = [
     'gemini-2.0-flash',
     'gemini-2.0-flash-lite',
+    'gemini-flash-lite-latest',
     'gemini-1.5-flash-latest',
-    'gemini-1.5-flash-8b-latest',
     'gemini-1.5-flash-002',
     'gemini-1.5-pro-latest'
   ];
-  
+
   const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
 
   const prompt = `你是一個專業的教育助手。用戶對以下主題中的「${keyword}」感興趣，請為他進行深入淺出的解析。
@@ -872,28 +872,28 @@ CRITICAL: TRADITIONAL CHINESE only.`;
   try {
     let result = null;
     let successModel = null;
-    
+
     if (cachedResult) {
       console.log('♻️ Using cached Deep Dive result for consistency.');
       result = cachedResult;
       successModel = 'CACHED';
     } else {
       const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, null, null, async (msg) => {
-        try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) {}
+        try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) { }
       }, redis);
       result = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
       if (result) {
         successModel = "Gemini";
       }
     }
-    
+
     if (!result) {
       throw new Error("All models failed or returned empty.");
     }
 
     let explanationPart = result;
     let menuPart = "";
-    
+
     if (result.includes('--- 延伸閱讀 ---')) {
       const parts = result.split('--- 延伸閱讀 ---');
       explanationPart = parts[0].trim();
