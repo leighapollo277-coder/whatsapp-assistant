@@ -9,17 +9,6 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Global array for debug tracking
-let recentRequests = [];
-let recentLogs = [];
-
-function logDebug(msg) {
-  const line = `[${new Date().toISOString()}] ${msg}`;
-  console.log(line);
-  recentLogs.push(line);
-  if (recentLogs.length > 50) recentLogs.shift();
-}
-
 // Initialize Redis 
 const redis = process.env.KV_REDIS_URL ? new Redis(process.env.KV_REDIS_URL, {
   connectTimeout: 10000,
@@ -55,20 +44,15 @@ function getConfig() {
  * 1. Health Check
  */
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok_v3', uptime: process.uptime(), redis: !!redis });
+  res.status(200).json({ status: 'ok_final', uptime: process.uptime(), redis: !!redis });
 });
 
 /**
  * 2. WhatsApp Webhook (Twilio)
  */
 app.post('/api/webhook', async (req, res) => {
-  logDebug('--- WhatsApp Webhook Triggered ---');
+  console.log('--- WhatsApp Webhook Triggered ---');
   const body = req.body;
-  
-  // Track for debugging
-  recentRequests.push({ time: new Date().toISOString(), platform: 'whatsapp', body });
-  if (recentRequests.length > 20) recentRequests.shift();
-
   const config = getConfig();
   
   const twilioClient = twilio(config.twilioSid, config.twilioAuth);
@@ -76,9 +60,7 @@ app.post('/api/webhook', async (req, res) => {
   const messagingClient = new TwilioMessagingClient(twilioClient, body.To, body.From);
 
   try {
-    logDebug(`Processing request from ${body.From}`);
     const procResult = await processRequest(body, messagingClient, null, config, redis, true, false);
-    logDebug(`ProcessRequest result: ${JSON.stringify(procResult)}`);
     
     if (procResult.linkUrl) {
       const sid = body.SmsSid || body.MessageSid || `link_${Date.now()}`;
@@ -106,7 +88,7 @@ app.post('/api/webhook', async (req, res) => {
     
     res.status(200).send('<Response></Response>');
   } catch (err) {
-    logDebug(`[WhatsApp Error] ${err.message}`);
+    console.error('[WhatsApp Error]', err.message);
     res.status(200).send('<Response></Response>');
   }
 });
@@ -183,13 +165,6 @@ app.get('/api/dashboard/stats', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-/**
- * 5. Debug Endpoint
- */
-app.get('/api/debug-requests', (req, res) => {
-  res.json({ requests: recentRequests, logs: recentLogs });
 });
 
 // Start Server
