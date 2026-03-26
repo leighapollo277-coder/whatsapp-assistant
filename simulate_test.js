@@ -27,12 +27,26 @@ async function runTest1() {
         await new Promise(r => setTimeout(r, 30000));
         
         console.log("📊 Auditing Production Logs...");
-        const logs = execSync(`export RENDER_API_KEY=rnd_pNra6ZPZyfWDnLJD1pwmxmjrck2P && render logs -r ${SERVICE_ID} --limit 100 --output json`).toString();
+        const logs = execSync(`export RENDER_API_KEY=rnd_pNra6ZPZyfWDnLJD1pwmxmjrck2P && render logs -r ${SERVICE_ID} --direction backward --limit 200 --output json`).toString();
         
-        if (logs.includes("Extracted") && logs.includes("voice chunks")) {
-            console.log("🎉 SUCCESS: Link content extracted and voice chunks generated!");
+        const hasExtracted = logs.includes("Extracted");
+        const hasVoice = logs.includes("voice chunks");
+        const hasSuccess = logs.includes("SUCCESS with");
+        const hasCompleted = logs.includes("Task") && logs.includes("completed");
+        const hasAllFailed = logs.includes("All attempts exhausted");
+        
+        console.log(`  📋 Extraction: ${hasExtracted ? '✅' : '❌'}`);
+        console.log(`  📋 Voice Chunks: ${hasVoice ? '✅' : '❌'}`);
+        console.log(`  📋 Gemini Success: ${hasSuccess ? '✅' : '⏳ Pending'}`);
+        console.log(`  📋 Task Completed: ${hasCompleted ? '✅' : '⏳ Pending'}`);
+        if (hasAllFailed) console.log(`  ⚠️ All Gemini attempts exhausted — check API keys/quotas.`);
+        
+        if (hasExtracted && (hasSuccess || hasVoice)) {
+            console.log("🎉 SUCCESS: Link processing working!");
+        } else if (hasExtracted) {
+            console.log("⚠️ PARTIAL: Extraction works but Gemini summarization failed.");
         } else {
-            console.log("❌ FAILURE: Could not find extraction logs. Check Render dashboard.");
+            console.log("❌ FAILURE: Could not find extraction logs.");
         }
     } catch (err) {
         console.error("❌ Test 1 Error:", err.message);

@@ -709,7 +709,7 @@ async function processLink(targetUrl, From, messagingClient, config, redis, cach
       GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
     }
 
-    const models = ['gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-002', 'gemini-1.5-pro-latest'];
+    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-002', 'gemini-1.5-pro-latest'];
     const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
     let finalContent = null;
     let successModel = null;
