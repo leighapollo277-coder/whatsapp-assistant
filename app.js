@@ -57,7 +57,7 @@ function getConfig() {
  * 1. Health Check
  */
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok_v4_auth', uptime: process.uptime(), redis: !!redis });
+  res.status(200).json({ status: 'ok_v5_stabilized', uptime: process.uptime(), redis: !!redis });
 });
 
 /**
