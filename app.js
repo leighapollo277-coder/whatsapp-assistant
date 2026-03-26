@@ -60,7 +60,32 @@ app.post('/api/webhook', async (req, res) => {
   const messagingClient = new TwilioMessagingClient(twilioClient, body.To, body.From);
 
   try {
-    await processRequest(body, messagingClient, null, config, redis);
+    const procResult = await processRequest(body, messagingClient, null, config, redis, true, false);
+    
+    if (procResult.linkUrl) {
+      const sid = body.SmsSid || body.MessageSid || `link_${Date.now()}`;
+      const linkCode = `v_${sid}`;
+      if (redis) {
+        await redis.set(`retry:task:${linkCode}`, JSON.stringify({
+          taskType: 'web-link', platform: 'whatsapp',
+          linkUrl: procResult.linkUrl, From: body.From, To: body.To,
+          queuedAt: Date.now(), nextRun: Date.now() + 2000 
+        }), 'EX', 3600);
+        await redis.sadd('retry:pending', linkCode);
+      }
+    } else if (procResult.handled && !procResult.result) {
+      const isVoice = body.MediaContentType0 && (body.MediaContentType0.includes('audio') || body.MediaContentType0.includes('video'));
+      if (isVoice && redis) {
+        const sid = body.SmsSid || body.MessageSid || `v_${Date.now()}`;
+        const voiceCode = `v_${sid}`;
+        await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+          ...body, taskType: 'voice-fact-check', platform: 'whatsapp',
+          queuedAt: Date.now(), nextRun: Date.now() + 5000 
+        }), 'EX', 3600);
+        await redis.sadd('retry:pending', voiceCode);
+      }
+    }
+    
     res.status(200).send('<Response></Response>');
   } catch (err) {
     console.error('[WhatsApp Error]', err.message);
@@ -99,7 +124,29 @@ app.post('/api/telegram', async (req, res) => {
     if (body.message?.voice) payload.MediaContentType0 = 'audio/ogg';
     if (body.message?.photo) payload.MediaContentType0 = 'image/jpeg';
 
-    await processRequest(payload, messagingClient, null, config, redis);
+    const procResult = await processRequest(payload, messagingClient, null, config, redis, true, false);
+    
+    if (procResult.linkUrl) {
+      const linkCode = `v_tg_${chatId}_${Date.now()}`;
+      if (redis) {
+        await redis.set(`retry:task:${linkCode}`, JSON.stringify({
+          taskType: 'web-link', platform: 'telegram',
+          linkUrl: procResult.linkUrl, From: payload.From, To: 'telegram',
+          queuedAt: Date.now(), nextRun: Date.now() + 2000 
+        }), 'EX', 3600);
+        await redis.sadd('retry:pending', linkCode);
+      }
+    } else if (procResult.handled && !procResult.result) {
+      if (body.message?.voice && redis) {
+        const voiceCode = `v_tg_${chatId}_${Date.now()}`;
+        await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+          ...payload, taskType: 'voice-fact-check', platform: 'telegram',
+          queuedAt: Date.now(), nextRun: Date.now() + 5000 
+        }), 'EX', 3600);
+        await redis.sadd('retry:pending', voiceCode);
+      }
+    }
+
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error('[Telegram Error]', err.message);
