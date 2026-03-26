@@ -9,6 +9,9 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Global array for debug tracking
+let recentRequests = [];
+
 // Initialize Redis 
 const redis = process.env.KV_REDIS_URL ? new Redis(process.env.KV_REDIS_URL, {
   connectTimeout: 10000,
@@ -53,6 +56,11 @@ app.get('/health', (req, res) => {
 app.post('/api/webhook', async (req, res) => {
   console.log('--- WhatsApp Webhook Triggered ---');
   const body = req.body;
+  
+  // Track for debugging
+  recentRequests.push({ time: new Date().toISOString(), platform: 'whatsapp', body });
+  if (recentRequests.length > 20) recentRequests.shift();
+
   const config = getConfig();
   
   const twilioClient = twilio(config.twilioSid, config.twilioAuth);
@@ -165,6 +173,13 @@ app.get('/api/dashboard/stats', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+/**
+ * 5. Debug Endpoint
+ */
+app.get('/api/debug-requests', (req, res) => {
+  res.json(recentRequests);
 });
 
 // Start Server
