@@ -6,6 +6,7 @@ const cheerio = require('cheerio');
 const googleTTS = require('google-tts-api'); // Use existing dependency
 
 let GEMINI_API_KEY = ""; // Module-level key initialized in processRequest
+const DEPLOY_TIME = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false });
 
 // Helper: Global (Model, Key) Priority Ordering
 // Deprecated: Logic moved inside callGeminiApi rotation
@@ -299,7 +300,7 @@ async function processRequest(payload, messagingClient, tasksApi, config, redis,
   if (MediaUrl0 && MediaContentType0 && MediaContentType0.includes('image')) {
     // 1. Send immediate processing feedback
     console.log(`Processing image from ${From}`);
-    await messagingClient.sendText("🖼️ 收到圖片！正在進行事實查核... ⏳\n\n(💤 提示：初次使用如需喚醒系統，可能會有 60 秒延遲。)");
+    await messagingClient.sendText(`🖼️ 收到圖片！正在進行事實查核... ⏳\n\n(💤 提示：初次使用如需喚醒系統，可能會有 60 秒延遲。)\n📦 版本：${DEPLOY_TIME}`);
     await new Promise(resolve => setTimeout(resolve, 1000));
 
     const imgBuffer = await messagingClient.downloadMedia(MediaUrl0);
@@ -507,7 +508,7 @@ JSON Output: { "intent": "INTENT_NAME", "action": "動作（如 DELETE）" }`;
       const urlMatch = Body.match(/(https?:\/\/[^\s]+)/);
       if (urlMatch) {
         const targetUrl = urlMatch[0];
-        await messagingClient.sendText("📖 正在為您讀取網頁內容並準備導讀... 請稍候 ⏳");
+        await messagingClient.sendText(`📖 正在為您讀取網頁內容並準備導讀... 請稍候 ⏳\n📦 版本：${DEPLOY_TIME}`);
         return { handled: true, linkUrl: targetUrl };
       }
     }
@@ -698,7 +699,7 @@ ${listStr}`;
 // Helper: Process Link Summary (Fact-Check Style)
 async function processLink(targetUrl, From, messagingClient, config, redis, cachedResult = null) {
   try {
-    await messagingClient.sendText("🌐 收到網頁！正在讀取並分析全文... ⏳\n\n(💤 提示：初次使用如需喚醒系統，可能會有 60 秒延遲。)");
+    await messagingClient.sendText(`🌐 收到網頁！正在讀取並分析全文... ⏳\n\n(💤 提示：初次使用如需喚醒系統，可能會有 60 秒延遲。)\n📦 版本：${DEPLOY_TIME}`);
     // Initialize module-level GEMINI_API_KEY if not already set or if config provides a new one
     if (config?.GEMINI_API_KEY) {
       GEMINI_API_KEY = config.GEMINI_API_KEY;
