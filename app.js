@@ -79,11 +79,11 @@ app.post('/api/webhook', async (req, res) => {
       const sid = body.SmsSid || body.MessageSid || `link_${Date.now()}`;
       const linkCode = `v_${sid}`;
       if (redis) {
-        await redis.set(`retry:task:${linkCode}`, JSON.stringify({
+        await redis.hset('retry:task', linkCode, JSON.stringify({
           taskType: 'web-link', platform: 'whatsapp',
           linkUrl: procResult.linkUrl, From: body.From, To: body.To,
           queuedAt: Date.now(), nextRun: Date.now() + 2000 
-        }), 'EX', 3600);
+        }));
         await redis.sadd('retry:pending', linkCode);
       }
     } else if (procResult.handled && !procResult.result) {
@@ -91,10 +91,10 @@ app.post('/api/webhook', async (req, res) => {
       if (isVoice && redis) {
         const sid = body.SmsSid || body.MessageSid || `v_${Date.now()}`;
         const voiceCode = `v_${sid}`;
-        await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+        await redis.hset('retry:task', voiceCode, JSON.stringify({
           ...body, taskType: 'voice-fact-check', platform: 'whatsapp',
           queuedAt: Date.now(), nextRun: Date.now() + 5000 
-        }), 'EX', 3600);
+        }));
         await redis.sadd('retry:pending', voiceCode);
       }
     }
@@ -142,20 +142,20 @@ app.post('/api/telegram', async (req, res) => {
     if (procResult.linkUrl) {
       const linkCode = `v_tg_${chatId}_${Date.now()}`;
       if (redis) {
-        await redis.set(`retry:task:${linkCode}`, JSON.stringify({
+        await redis.hset('retry:task', linkCode, JSON.stringify({
           taskType: 'web-link', platform: 'telegram',
           linkUrl: procResult.linkUrl, From: payload.From, To: 'telegram',
           queuedAt: Date.now(), nextRun: Date.now() + 2000 
-        }), 'EX', 3600);
+        }));
         await redis.sadd('retry:pending', linkCode);
       }
     } else if (procResult.handled && !procResult.result) {
       if (body.message?.voice && redis) {
         const voiceCode = `v_tg_${chatId}_${Date.now()}`;
-        await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+        await redis.hset('retry:task', voiceCode, JSON.stringify({
           ...payload, taskType: 'voice-fact-check', platform: 'telegram',
           queuedAt: Date.now(), nextRun: Date.now() + 5000 
-        }), 'EX', 3600);
+        }));
         await redis.sadd('retry:pending', voiceCode);
       }
     }
@@ -298,9 +298,79 @@ app.get('/api/dashboard/data', async (req, res) => {
   }
 });
 
+// --- Background Processor ---
+async function startBackgroundProcessor() {
+  if (!redis) return;
+  console.log('🤖 Background Processor Started');
+  
+  setInterval(async () => {
+    try {
+      const pendingIds = await redis.smembers('retry:pending');
+      if (pendingIds.length === 0) return;
+
+      for (const id of pendingIds) {
+        const taskRaw = await redis.hget('retry:task', id);
+        if (!taskRaw) {
+          await redis.srem('retry:pending', id);
+          continue;
+        }
+
+        const task = JSON.parse(taskRaw);
+        if (task.isProcessing || (task.nextRun && task.nextRun > Date.now())) continue;
+
+        // Lock & Process
+        task.isProcessing = true;
+        task.startTime = Date.now();
+        await redis.hset('retry:task', id, JSON.stringify(task));
+
+        console.log(`📡 Processing task ${id} (${task.taskType})`);
+        
+        try {
+          const config = getConfig();
+          const twilioClient = twilio(config.twilioSid, config.twilioAuth);
+          
+          let messagingClient;
+          if (task.platform === 'whatsapp') {
+            messagingClient = new TwilioMessagingClient(twilioClient, task.To, task.From);
+          } else {
+            messagingClient = new TelegramMessagingClient(config.telegramToken, task.From);
+          }
+
+          if (task.taskType === 'web-link') {
+            await require('./api/lib/processor').processLink(task.linkUrl, task.From, messagingClient, config, redis);
+          } else if (task.taskType === 'voice-fact-check') {
+            await processRequest(task, messagingClient, null, config, redis, false, true);
+          }
+
+          // Cleanup on success
+          await redis.hdel('retry:task', id);
+          await redis.srem('retry:pending', id);
+          console.log(`✅ Task ${id} completed.`);
+        } catch (procErr) {
+          console.error(`❌ Task ${id} failed:`, procErr.message);
+          task.isProcessing = false;
+          task.retryCount = (task.retryCount || 0) + 1;
+          task.nextRun = Date.now() + Math.min(300000, Math.pow(2, task.retryCount) * 10000); // Backoff
+          
+          if (task.retryCount > 5) {
+            await redis.hdel('retry:task', id);
+            await redis.srem('retry:pending', id);
+            console.warn(`🗑️ Task ${id} abandoned after 5 fails.`);
+          } else {
+            await redis.hset('retry:task', id, JSON.stringify(task));
+          }
+        }
+      }
+    } catch (loopErr) {
+      console.error('[Processor Loop Error]', loopErr.message);
+    }
+  }, 8000); // Check every 8 seconds
+}
+
 // Start Server
 app.listen(port, () => {
   console.log(`🚀 Assistant Server running at http://localhost:${port}`);
   console.log(`📡 WhatsApp Hook: /api/webhook`);
   console.log(`📡 Telegram Hook: /api/telegram`);
+  startBackgroundProcessor();
 });

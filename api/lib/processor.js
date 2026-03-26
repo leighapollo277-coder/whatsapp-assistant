@@ -768,16 +768,26 @@ CRITICAL: TRADITIONAL CHINESE only. 請全程使用香港廣東話口語 (Hong K
 ${combinedText}`;
 
       const prioritizedPairs = await getPrioritizedPairs(models, apiKeys, redis);
-      for (const { model, key } of prioritizedPairs) {
+      for (const { model, key, index: kIdx } of prioritizedPairs) {
         try {
+          console.log(`📡 Link Extract: Attempting ${model} with Key ${String.fromCharCode(65 + kIdx)}`);
           const resp = await callGeminiApi(model, prompt, key, null, null);
           const result = resp.data.candidates[0].content.parts.map(p => p.text || '').join('\n').trim();
           if (result) {
             finalContent = result;
             successModel = model;
+            if (redis) await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
             break;
           }
-        } catch (e) { console.error(`Link extract error ${model}:`, e.message); }
+        } catch (e) { 
+          const status = e.response?.status;
+          if (status === 429) {
+            if (redis) await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', 600);
+            console.warn(`Link Key ${String.fromCharCode(65 + kIdx)} hit quota, rotating...`);
+          } else {
+            console.error(`Link extract error ${model}:`, e.message); 
+          }
+        }
       }
     }
     
