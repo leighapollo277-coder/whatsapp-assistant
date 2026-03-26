@@ -298,6 +298,41 @@ app.get('/api/dashboard/data', async (req, res) => {
   }
 });
 
+/**
+ * 4. Diagnostics Endpoint (Step 10 of Debug Plan)
+ */
+app.get('/api/admin/tasks', async (req, res) => {
+  try {
+    const sessionId = req.cookies.session_id || req.headers.authorization?.split(' ')[1];
+    if (!sessionId || !(await redis.get(`session:${sessionId}`))) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (!redis) return res.status(503).json({ error: 'Redis disconnected' });
+
+    const pendingIds = await redis.smembers('retry:pending');
+    const tasks = [];
+    for (const id of pendingIds) {
+      const taskRaw = await redis.hget('retry:task', id);
+      if (taskRaw) {
+        const task = JSON.parse(taskRaw);
+        tasks.push({ id, ...task });
+      } else {
+        tasks.push({ id, status: 'ORPHANED_ID' });
+      }
+    }
+
+    res.json({
+      success: true,
+      count: tasks.length,
+      tasks,
+      timestamp: Date.now()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Background Processor ---
 async function startBackgroundProcessor() {
   if (!redis) return;
@@ -320,8 +355,16 @@ async function startBackgroundProcessor() {
 
         // Lock & Process
         task.isProcessing = true;
-        task.startTime = Date.now();
+        task.startTime = task.startTime || Date.now();
         await redis.hset('retry:task', id, JSON.stringify(task));
+
+        // Step 3: Abandonment Detection (15 min cutoff)
+        if (task.startTime && (Date.now() - task.startTime > 900000)) {
+          console.warn(`⚠️ Task ${id} timed out (15m), abandoning.`);
+          await redis.hdel('retry:task', id);
+          await redis.srem('retry:pending', id);
+          continue;
+        }
 
         console.log(`📡 Processing task ${id} (${task.taskType})`);
         
@@ -352,10 +395,22 @@ async function startBackgroundProcessor() {
           task.retryCount = (task.retryCount || 0) + 1;
           task.nextRun = Date.now() + Math.min(300000, Math.pow(2, task.retryCount) * 10000); // Backoff
           
-          if (task.retryCount > 5) {
+          if (task.retryCount > 3) { // Reduced from 5 to 3 for faster failure feedback
             await redis.hdel('retry:task', id);
             await redis.srem('retry:pending', id);
-            console.warn(`🗑️ Task ${id} abandoned after 5 fails.`);
+            console.warn(`🗑️ Task ${id} abandoned after 3 fails.`);
+            
+            // Step 8: Graceful Failure Notification
+            try {
+              const config = getConfig();
+              const twilioClient = twilio(config.twilioSid, config.twilioAuth);
+              let msgClient;
+              if (task.platform === 'whatsapp') msgClient = new TwilioMessagingClient(twilioClient, task.To, task.From);
+              else msgClient = new TelegramMessagingClient(config.telegramToken, task.From);
+              
+              await msgClient.sendMessage("⚠️ 抱歉，处理该任务失败多次，已停止。请稍后再试或检查链接是否有效。");
+            } catch (e) { console.error('Failed to send failure notification:', e.message); }
+
           } else {
             await redis.hset('retry:task', id, JSON.stringify(task));
           }

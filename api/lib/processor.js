@@ -189,14 +189,14 @@ async function callGeminiApi(model, prompt, key, mediaData = null, tools = null)
 
   try {
     return await axios.post(geminiUrl, payload, { 
-      timeout: 45000, headers: { 'x-goog-api-key': key } 
+      timeout: 30000, headers: { 'x-goog-api-key': key } 
     });
   } catch (err) {
     if (err.response?.status === 404) {
       console.warn(`⚠️ ${model} 404 on v1beta, trying v1...`);
       geminiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
       return await axios.post(geminiUrl, payload, { 
-        timeout: 45000, headers: { 'x-goog-api-key': key } 
+        timeout: 30000, headers: { 'x-goog-api-key': key } 
       });
     }
     throw err;

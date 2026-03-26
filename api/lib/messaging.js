@@ -26,6 +26,7 @@ class TwilioMessagingClient extends MessagingClient {
   async downloadMedia(mediaUrl) {
     const response = await axios({
       method: 'get', url: mediaUrl, responseType: 'arraybuffer',
+      timeout: 15000,
       auth: { username: process.env.TWILIO_ACCOUNT_SID, password: process.env.TWILIO_AUTH_TOKEN }
     });
     return Buffer.from(response.data);
@@ -51,12 +52,12 @@ class TelegramMessagingClient extends MessagingClient {
   }
   async downloadMedia(mediaUrl) {
     if (mediaUrl.startsWith('http')) {
-      const response = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
+      const response = await axios.get(mediaUrl, { responseType: 'arraybuffer', timeout: 15000 });
       return Buffer.from(response.data);
     }
-    const fileResponse = await axios.get(`${this.baseUrl}/getFile?file_id=${mediaUrl}`);
+    const fileResponse = await axios.get(`${this.baseUrl}/getFile?file_id=${mediaUrl}`, { timeout: 10000 });
     const filePath = fileResponse.data.result.file_path;
-    const downloadResponse = await axios.get(`https://api.telegram.org/file/bot${this.token}/${filePath}`, { responseType: 'arraybuffer' });
+    const downloadResponse = await axios.get(`https://api.telegram.org/file/bot${this.token}/${filePath}`, { responseType: 'arraybuffer', timeout: 20000 });
     return Buffer.from(downloadResponse.data);
   }
 }
