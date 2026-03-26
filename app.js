@@ -11,6 +11,14 @@ const port = process.env.PORT || 3000;
 
 // Global array for debug tracking
 let recentRequests = [];
+let recentLogs = [];
+
+function logDebug(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}`;
+  console.log(line);
+  recentLogs.push(line);
+  if (recentLogs.length > 50) recentLogs.shift();
+}
 
 // Initialize Redis 
 const redis = process.env.KV_REDIS_URL ? new Redis(process.env.KV_REDIS_URL, {
@@ -54,7 +62,7 @@ app.get('/health', (req, res) => {
  * 2. WhatsApp Webhook (Twilio)
  */
 app.post('/api/webhook', async (req, res) => {
-  console.log('--- WhatsApp Webhook Triggered ---');
+  logDebug('--- WhatsApp Webhook Triggered ---');
   const body = req.body;
   
   // Track for debugging
@@ -68,7 +76,9 @@ app.post('/api/webhook', async (req, res) => {
   const messagingClient = new TwilioMessagingClient(twilioClient, body.To, body.From);
 
   try {
+    logDebug(`Processing request from ${body.From}`);
     const procResult = await processRequest(body, messagingClient, null, config, redis, true, false);
+    logDebug(`ProcessRequest result: ${JSON.stringify(procResult)}`);
     
     if (procResult.linkUrl) {
       const sid = body.SmsSid || body.MessageSid || `link_${Date.now()}`;
@@ -96,7 +106,7 @@ app.post('/api/webhook', async (req, res) => {
     
     res.status(200).send('<Response></Response>');
   } catch (err) {
-    console.error('[WhatsApp Error]', err.message);
+    logDebug(`[WhatsApp Error] ${err.message}`);
     res.status(200).send('<Response></Response>');
   }
 });
@@ -179,7 +189,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
  * 5. Debug Endpoint
  */
 app.get('/api/debug-requests', (req, res) => {
-  res.json(recentRequests);
+  res.json({ requests: recentRequests, logs: recentLogs });
 });
 
 // Start Server
