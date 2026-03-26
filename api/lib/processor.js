@@ -242,12 +242,24 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
 
         // Region/Model Not Found Fallback
         if (status === 404) {
-          console.warn(`⚠️ ${model} 404 on v1beta, trying v1 fallback...`);
+          console.warn(`⚠️ [callGeminiApi] ${model} 404 on v1beta, trying v1 fallback...`);
           let v1Url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
           try {
-             const v1Resp = await axios.post(v1Url, payload, { timeout: 30000 });
-             if (v1Resp.data.candidates?.[0]?.content) return v1Resp.data;
-          } catch (e) {}
+            const v1Res = await axios.post(v1Url, payload, { timeout: 15000 });
+            if (v1Res.data.candidates?.[0]?.content) {
+              console.log(`[callGeminiApi] SUCCESS with ${model} (v1 fallback, Key #${actualKIdx + 1})`);
+              if (redis) {
+                await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
+              }
+              return v1Res.data;
+            } else {
+              throw new Error("Empty response content from Gemini (v1 fallback).");
+            }
+          } catch (v1Err) {
+            const v1Status = v1Err.response?.status;
+            const v1Msg = v1Err.response?.data?.error?.message || v1Err.message || "";
+            console.error(`[callGeminiApi] v1 Fallback FAILED: ${model} | HTTP ${v1Status || 'ERR'} | ${v1Msg}`);
+          }
         }
 
         // If it's a 400 (Bad Request) or 403 (Safety), don't keep trying this specific prompt with other keys
