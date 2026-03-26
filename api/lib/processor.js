@@ -47,8 +47,8 @@ async function generateAndSendVoice(text, messagingClient, statusPrefix = "ðŸŽ™ï
     if (finalCleanText.length < 5) return false;
 
     const tmpAudioPath = `/tmp/v_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp3`;
-    const playbackRate = isLink ? '+40%' : '+20%'; // High speed for links to stay under 10s
-    const synthTimeout = isLink ? 9500 : 25000;
+    const playbackRate = isLink ? '+40%' : '+20%';
+    const synthTimeout = isLink ? 60000 : 30000;
 
     const tts = new EdgeTTS({
       voice: 'zh-HK-WanLungNeural', // Male Cantonese
@@ -792,7 +792,7 @@ ${combinedText}`;
     }
 
     // 1. Generate Voice for Entire Article (Chunked)
-    const voiceChunks = chunkText(fullTextPart, 800);
+    const voiceChunks = chunkText(fullTextPart, 500);
     console.log(`Link Reading: Generated ${voiceChunks.length} voice chunks.`);
 
     if (voiceChunks.length > 0) {
