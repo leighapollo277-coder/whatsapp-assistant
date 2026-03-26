@@ -172,21 +172,20 @@ module.exports = async (req, res) => {
     }
 
     // 3. Process Request
-    let formattedKey = GOOGLE_PRIVATE_KEY.includes('\\n') ? GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : GOOGLE_PRIVATE_KEY;
-    if (!formattedKey.includes('-----BEGIN PRIVATE KEY-----')) {
-      formattedKey = `-----BEGIN PRIVATE KEY-----\n${formattedKey}\n-----END PRIVATE KEY-----`;
-    }
+    const cleanKey = (process.env.GOOGLE_PRIVATE_KEY || "").trim().replace(/^"|"$/g, '').replace(/\\n/g, '\n');
     const auth = new google.auth.JWT({ 
-      email: GOOGLE_SERVICE_ACCOUNT_EMAIL, key: formattedKey, 
-      scopes: ['https://www.googleapis.com/auth/tasks'] 
+      email: (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "").trim(), 
+      key: cleanKey, 
+      scopes: [
+        'https://www.googleapis.com/auth/tasks'
+      ] 
     });
     const tasksApi = google.tasks({ version: 'v1', auth });
     const procConfig = { 
-      GEMINI_API_KEY, 
-      GOOGLE_TASK_LIST_ID,
-      GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      GOOGLE_PRIVATE_KEY,
-      GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID || 'primary'
+      GEMINI_API_KEY: (process.env.GEMINI_API_KEY || "").trim(), 
+      GOOGLE_TASK_LIST_ID: (process.env.GOOGLE_TASK_LIST_ID || "").trim(), 
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "").trim(), 
+      GOOGLE_PRIVATE_KEY: (process.env.GOOGLE_PRIVATE_KEY || "").trim()
     };
 
     if (payload.MediaContentType0 && payload.MediaContentType0.includes('image')) {
@@ -206,17 +205,19 @@ module.exports = async (req, res) => {
           nextRun: Date.now() + 1000
         }), 'EX', 3600);
         await redis.sadd('retry:pending', linkCode);
-      } else if (procResult.handled) {
-        const voiceCode = `v_tg_${Date.now()}`;
-        await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
-          ...payload,
-          taskType: 'voice-fact-check',
-          platform: 'telegram',
-          cachedResult: procResult.result,
-          queuedAt: Date.now(),
-          nextRun: Date.now() + 3000
-        }), 'EX', 3600);
-        await redis.sadd('retry:pending', voiceCode);
+      } else if (procResult.handled && !procResult.result) {
+        const isVoice = payload.MediaContentType0 && (payload.MediaContentType0.includes('audio') || payload.MediaContentType0.includes('video'));
+        if (isVoice) {
+          const voiceCode = `v_tg_${Date.now()}`;
+          await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+            ...payload,
+            taskType: 'voice-fact-check',
+            platform: 'telegram',
+            queuedAt: Date.now(),
+            nextRun: Date.now() + 3000
+          }), 'EX', 3600);
+          await redis.sadd('retry:pending', voiceCode);
+        }
       } else if (BodyText) {
         await messagingClient.sendText("請傳送廣東話語音訊息、網頁連結或圖片進行事實查核！");
       }

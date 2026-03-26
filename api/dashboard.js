@@ -118,41 +118,18 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'Authentication failed' });
     }
 
-    if (action === 'get-data') {
-      const sessionId = cookies.session_id || req.headers.authorization?.split(' ')[1];
-      if (!sessionId || !(await redis.get(`session:${sessionId}`))) {
-        return res.status(401).json({ error: 'Unauthorized' });
+      if (action === 'get-data') {
+        const sessionId = cookies.session_id || req.headers.authorization?.split(' ')[1];
+        if (!sessionId || !(await redis.get(`session:${sessionId}`))) {
+          return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        // Fetch from Redis
+        const notesRaw = await redis.lrange('notes:all', 0, 100);
+        const data = notesRaw.map(n => JSON.parse(n));
+
+        return res.status(200).json({ success: true, data });
       }
-
-      const auth = new google.auth.JWT(
-        process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        null,
-        process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-        ['https://www.googleapis.com/auth/spreadsheets.readonly']
-      );
-      const sheets = google.sheets({ version: 'v4', auth });
-      const spreadsheetId = await redis.get('system:google_sheet_id');
-      
-      if (!spreadsheetId) return res.status(200).json({ data: [] });
-
-      const response = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: 'Sheet1!A2:G100',
-      });
-
-      const rows = response.data.values || [];
-      const data = rows.map(r => ({
-        timestamp: r[0],
-        original: r[1],
-        refined: r[2],
-        category: r[3],
-        tasks: r[4],
-        calLink: r[5],
-        status: r[6]
-      })).reverse();
-
-      return res.status(200).json({ data });
-    }
 
     return res.status(404).send('Not Found');
   } catch (err) {

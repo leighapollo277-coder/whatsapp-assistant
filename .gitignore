@@ -11,3 +11,6 @@ rclone*
 test_*.js
 *.mp3
 /tmp/
+server.local.js
+.vercel
+.env*.local

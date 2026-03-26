@@ -147,37 +147,56 @@ module.exports = async (req, res) => {
     }
 
     // 3.5 Handle Interactive Learning / Deep Dive
-    const cleanNumBody = Body.trim();
-    if (/^[1-9]$/.test(cleanNumBody)) {
+    const rawNumBody = Body.trim();
+    const menuMatch = rawNumBody.match(/^(\d{4})\s*([1-9])$/) || rawNumBody.match(/^([1-9])$/);
+    
+    if (menuMatch) {
       try {
-        const stateStr = await redis.get(`learning_state:${From}`);
-        if (stateStr) {
-          const state = JSON.parse(stateStr);
-          const choiceIdx = parseInt(cleanNumBody, 10) - 1;
-          
-          if (state.keywords && choiceIdx >= 0 && choiceIdx < state.keywords.length) {
-            const keyword = state.keywords[choiceIdx];
-            const context = state.context || "";
-            
-            await redis.del(`learning_state:${From}`);
-            await messagingClient.sendText(`📚 正在為您深入解析「${keyword}」... 請稍候 ⏳`);
-            
-            const config = { GEMINI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN };
-            const { handled, result: diveResult } = await processDeepDive(keyword, context, From, messagingClient, config, redis, true, false); // skipVoice: true, skipText: false
-            
-            // Queue for background audio (Idempotent: use SmsSid)
-            const sid = body.SmsSid || body.MessageSid || `rand_${Math.floor(1000 + Math.random() * 9000)}`;
-            const voiceCode = `v_${sid}`;
-            await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
-              taskType: 'voice-deep-dive',
-              platform: 'whatsapp',
-              keyword, context, From, To,
-              cachedResult: diveResult,
-              queuedAt: Date.now(),
-              nextRun: Date.now() + 5000 // Run almost immediately in next cron
-            }), 'EX', 3600);
-            await redis.sadd('retry:pending', voiceCode);
+        let menuId = null;
+        let choiceNum = null;
 
+        if (menuMatch[2]) {
+          // Case: "2343 5"
+          menuId = menuMatch[1];
+          choiceNum = menuMatch[2];
+        } else {
+          // Case: "5" (use latest)
+          menuId = await redis.get(`latest_learning_state_id:${From}`);
+          choiceNum = menuMatch[1];
+        }
+
+        if (menuId) {
+          const stateStr = await redis.get(`learning_state:${From}:${menuId}`);
+          if (stateStr) {
+            const state = JSON.parse(stateStr);
+            const choiceIdx = parseInt(choiceNum, 10) - 1;
+            
+            if (state.keywords && choiceIdx >= 0 && choiceIdx < state.keywords.length) {
+              const keyword = state.keywords[choiceIdx];
+              const context = state.context || "";
+              
+              await messagingClient.sendText(`📚 [#${menuId}] 正在深入解析「${keyword}」... ⏳`);
+              
+              const config = { GEMINI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN };
+              const { handled, result: diveResult } = await processDeepDive(keyword, context, From, messagingClient, config, redis, true, false); 
+              
+              // Queue for background audio
+              const sid = body.SmsSid || body.MessageSid || `rand_${Math.floor(1000 + Math.random() * 9000)}`;
+              const voiceCode = `v_${sid}`;
+              await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+                taskType: 'voice-deep-dive',
+                platform: 'whatsapp',
+                keyword, context, From, To,
+                cachedResult: diveResult,
+                queuedAt: Date.now(),
+                nextRun: Date.now() + 2000 
+              }), 'EX', 3600);
+              await redis.sadd('retry:pending', voiceCode);
+
+              return res.status(200).send('<Response></Response>');
+            }
+          } else if (menuMatch[2]) {
+            await messagingClient.sendText(`⚠️ 找不到話題編號 ${menuId}，可能已過期。`);
             return res.status(200).send('<Response></Response>');
           }
         }
@@ -186,24 +205,24 @@ module.exports = async (req, res) => {
       }
     }
 
-    // 4. Auth & Processor Config
-    let formattedKey = GOOGLE_PRIVATE_KEY.includes('\\n') ? GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : GOOGLE_PRIVATE_KEY;
-    if (!formattedKey.includes('-----BEGIN PRIVATE KEY-----')) {
-      formattedKey = `-----BEGIN PRIVATE KEY-----\n${formattedKey}\n-----END PRIVATE KEY-----`;
-    }
+    // Use the already trimmed variables from top of function scope or re-trim them here safely
+    const cleanKey = GOOGLE_PRIVATE_KEY.replace(/^"|"$/g, '').replace(/\\n/g, '\n');
+    console.log(`Auth Debug (Webhook): Email=${GOOGLE_SERVICE_ACCOUNT_EMAIL}, KeyLen=${cleanKey.length}`);
     const auth = new google.auth.JWT({ 
-      email: GOOGLE_SERVICE_ACCOUNT_EMAIL, key: formattedKey, 
-      scopes: ['https://www.googleapis.com/auth/tasks'] 
+      email: GOOGLE_SERVICE_ACCOUNT_EMAIL, 
+      key: cleanKey, 
+      scopes: [
+        'https://www.googleapis.com/auth/tasks'
+      ] 
     });
     const tasksApi = google.tasks({ version: 'v1', auth });
     const procConfig = { 
       GEMINI_API_KEY, 
       GOOGLE_TASK_LIST_ID, 
-      TWILIO_ACCOUNT_SID, 
-      TWILIO_AUTH_TOKEN,
+      TWILIO_ACCOUNT_SID: TWILIO_ACCOUNT_SID, 
+      TWILIO_AUTH_TOKEN: TWILIO_AUTH_TOKEN,
       GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      GOOGLE_PRIVATE_KEY,
-      GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID || 'primary'
+      GOOGLE_PRIVATE_KEY
     };
 
     // 6. Run Processor with In-Request Active Retry
@@ -234,19 +253,21 @@ module.exports = async (req, res) => {
           }), 'EX', 3600);
           await redis.sadd('retry:pending', linkCode);
           handled = true;
-        } else if (procResult.handled) {
-          // Queue for background audio (Idempotent: use SmsSid)
-          const sid = body.SmsSid || body.MessageSid || `rand_${Math.floor(1000 + Math.random() * 9000)}`;
-          const voiceCode = `v_${sid}`;
-          await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
-            ...body,
-            taskType: 'voice-fact-check',
-            platform: 'whatsapp',
-            cachedResult: procResult.result,
-            queuedAt: Date.now(),
-            nextRun: Date.now() + 5000 
-          }), 'EX', 3600);
-          await redis.sadd('retry:pending', voiceCode);
+        } else if (procResult.handled && !procResult.result) {
+          // Only queue for background IF it's a voice/media task that needs further processing (no final result yet)
+          const isVoice = MediaContentType0 && (MediaContentType0.includes('audio') || MediaContentType0.includes('video'));
+          if (isVoice) {
+            const sid = body.SmsSid || body.MessageSid || `rand_${Math.floor(1000 + Math.random() * 9000)}`;
+            const voiceCode = `v_${sid}`;
+            await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+              ...body,
+              taskType: 'voice-fact-check',
+              platform: 'whatsapp',
+              queuedAt: Date.now(),
+              nextRun: Date.now() + 5000 
+            }), 'EX', 3600);
+            await redis.sadd('retry:pending', voiceCode);
+          }
           handled = true;
         }
         break;
