@@ -240,12 +240,16 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
           await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', 1800);
         }
 
-        // Region/Model Not Found Fallback
-        if (status === 404) {
-          console.warn(`⚠️ [callGeminiApi] ${model} 404 on v1beta, trying v1 fallback...`);
+        // Region/Model Not Found Fallback (or Tool Discrepancy)
+        if (status === 404 || status === 400) {
+          console.warn(`⚠️ [callGeminiApi] ${model} ${status} on v1beta, trying v1 fallback...`);
           let v1Url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
+          
+          // CRITICAL: Many v1 endpoints do not support 'tools' (Google Search)
+          const v1Payload = { contents: payload.contents };
+          
           try {
-            const v1Res = await axios.post(v1Url, payload, { timeout: 15000 });
+            const v1Res = await axios.post(v1Url, v1Payload, { timeout: 15000 });
             if (v1Res.data.candidates?.[0]?.content) {
               console.log(`[callGeminiApi] SUCCESS with ${model} (v1 fallback, Key #${actualKIdx + 1})`);
               if (redis) {
@@ -308,11 +312,10 @@ async function processRequest(payload, messagingClient, tasksApi, config, redis,
 
     const models = [
       'gemini-2.0-flash',
-      'gemini-1.5-flash',
+      'gemini-2.0-flash-lite',
       'gemini-1.5-flash-latest',
       'gemini-1.5-flash-002',
-      'gemini-1.5-flash-8b',
-      'gemini-1.5-pro'
+      'gemini-1.5-pro-latest'
     ];
 
     const prompt = `你是一個專業的事實查核與教育助手。請對輸入內容進行深度分析，輸出必須嚴格包含以下三個部分，並使用指定的分隔符號隔開：
@@ -529,7 +532,7 @@ JSON Output: {
 }
 Current Time: ${nowHK}`;
 
-    const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-002'];
+    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest'];
     let extractionResult = null;
 
     try {
@@ -583,7 +586,7 @@ Current Time: ${nowHK}`;
 返回最新的完整內容版本（繁體中文）。`;
     }
 
-    const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-002'];
+    const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest'];
     let transcription = null;
 
     try {
@@ -706,7 +709,7 @@ async function processLink(targetUrl, From, messagingClient, config, redis, cach
       GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
     }
 
-    const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-002', 'gemini-1.5-flash-8b', 'gemini-1.5-pro'];
+    const models = ['gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-002', 'gemini-1.5-pro-latest'];
     const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
     let finalContent = null;
     let successModel = null;
@@ -839,11 +842,10 @@ async function processDeepDive(keyword, context, From, messagingClient, config, 
 
   const models = [
     'gemini-2.0-flash',
-    'gemini-1.5-flash',
+    'gemini-2.0-flash-lite',
     'gemini-1.5-flash-latest',
     'gemini-1.5-flash-002',
-    'gemini-1.5-flash-8b',
-    'gemini-1.5-pro'
+    'gemini-1.5-pro-latest'
   ];
   
   const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));

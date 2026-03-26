@@ -16,6 +16,15 @@ if (redis) {
   redis.on('error', (err) => console.error('[Redis Core Error]', err.message));
 }
 
+// One-time diagnostic: log server region on first load
+if (!module.exports._ipLogged) {
+  module.exports._ipLogged = true;
+  const axios = require('axios');
+  axios.get('https://ifconfig.me', { timeout: 3000 }).then(r => {
+    console.log(`[Diagnostic] Server Public IP: ${r.data}`);
+  }).catch(() => console.log('[Diagnostic] IP check failed'));
+}
+
 module.exports = async (req, res) => {
   console.log('--- Webhook Triggered ---');
 
