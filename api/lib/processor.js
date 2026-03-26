@@ -27,9 +27,11 @@ async function generateAndSendVoice(text, messagingClient, statusPrefix = "🎙�
   try {
     if (!text) return false;
 
-    // Add part label to status if provided (e.g. " (第一部分)")
-    const fullStatus = partLabel ? `${statusPrefix} (${partLabel})` : statusPrefix;
-    if (fullStatus) await messagingClient.sendText(fullStatus);
+    // Handle status message skipping if statusPrefix is null
+    if (statusPrefix) {
+      const fullStatus = partLabel ? `${statusPrefix} (${partLabel})` : statusPrefix;
+      await messagingClient.sendText(fullStatus);
+    }
 
     const cleanText = String(text)
       .replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '')
