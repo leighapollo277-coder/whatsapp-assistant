@@ -215,7 +215,7 @@
 
         async function loadData() {
             try {
-                const res = await fetch('/api/dashboard?action=get-data');
+                const res = await fetch('/api/dashboard/data');
                 if (res.status === 401) return showLogin();
                 
             const { data } = await res.json();
@@ -246,10 +246,10 @@
     }
 
         async function handleRegister() {
-            const resp = await fetch('/api/dashboard?action=generate-registration-options');
+            const resp = await fetch('/api/dashboard/registration-options');
             const options = await resp.json();
             const regResp = await startRegistration(options);
-            const verifyResp = await fetch('/api/dashboard?action=verify-registration', {
+            const verifyResp = await fetch('/api/dashboard/verify-registration', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(regResp)
@@ -259,10 +259,10 @@
         }
 
         async function handleLogin() {
-            const resp = await fetch('/api/dashboard?action=generate-authentication-options');
+            const resp = await fetch('/api/dashboard/authentication-options');
             const options = await resp.json();
             const authResp = await startAuthentication(options);
-            const verifyResp = await fetch('/api/dashboard?action=verify-authentication', {
+            const verifyResp = await fetch('/api/dashboard/verify-authentication', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(authResp)

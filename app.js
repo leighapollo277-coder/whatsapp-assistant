@@ -2,12 +2,24 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const { parse } = require('querystring');
 const Redis = require('ioredis');
+const cookieParser = require('cookie-parser');
+const { 
+  generateRegistrationOptions, 
+  verifyRegistrationResponse, 
+  generateAuthenticationOptions, 
+  verifyAuthenticationResponse 
+} = require('@simplewebauthn/server');
 const { processRequest, processDeepDive } = require('./api/lib/processor');
 const path = require('path');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// WebAuthn Configuration
+const RP_NAME = 'AI Assistant Dashboard';
+const RP_ID = process.env.NODE_ENV === 'production' ? 'whatsapp-assistant-ex7w.onrender.com' : 'localhost';
+const ORIGIN = process.env.NODE_ENV === 'production' ? `https://${RP_ID}` : `http://localhost:${port}`;
 
 // Initialize Redis 
 const redis = process.env.KV_REDIS_URL ? new Redis(process.env.KV_REDIS_URL, {
@@ -21,6 +33,7 @@ if (redis) {
 
 // Middleware
 app.use(bodyParser.json());
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -155,13 +168,131 @@ app.post('/api/telegram', async (req, res) => {
 });
 
 /**
- * 4. Dashboard API
+ * 4. Dashboard API & WebAuthn
  */
 app.get('/api/dashboard/stats', async (req, res) => {
   if (!redis) return res.status(500).json({ error: 'No Redis' });
   try {
     const keys = await redis.keys('learning_state:*');
     res.json({ sessions: keys.length, status: 'active' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/dashboard/registration-options', async (req, res) => {
+  try {
+    const options = await generateRegistrationOptions({
+      rpName: RP_NAME,
+      rpID: RP_ID,
+      userID: 'admin',
+      userName: 'Admin User',
+      attestationType: 'none',
+      authenticatorSelection: {
+        residentKey: 'required',
+        userVerification: 'preferred',
+      },
+    });
+    await redis.set('webauthn:challenge:admin', options.challenge, 'EX', 300);
+    res.json(options);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/dashboard/verify-registration', async (req, res) => {
+  try {
+    const expectedChallenge = await redis.get('webauthn:challenge:admin');
+    const verification = await verifyRegistrationResponse({
+      response: req.body,
+      expectedChallenge,
+      expectedOrigin: ORIGIN,
+      expectedRPID: RP_ID,
+    });
+
+    if (verification.verified) {
+      const { registrationInfo } = verification;
+      const serializableInfo = {
+        credentialID: Buffer.from(registrationInfo.credentialID).toString('base64'),
+        credentialPublicKey: Buffer.from(registrationInfo.credentialPublicKey).toString('base64'),
+        counter: registrationInfo.counter,
+        credentialDeviceType: registrationInfo.credentialDeviceType,
+        credentialBackedUp: registrationInfo.credentialBackedUp,
+      };
+      await redis.set('webauthn:credential:admin', JSON.stringify(serializableInfo), 'EX', 3600 * 24 * 365);
+      res.json({ verified: true });
+    } else {
+      res.status(400).json({ error: 'Registration failed' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/dashboard/authentication-options', async (req, res) => {
+  try {
+    const credentialData = await redis.get('webauthn:credential:admin');
+    if (!credentialData) return res.status(400).json({ error: 'No user registered' });
+    
+    const credential = JSON.parse(credentialData);
+    const options = await generateAuthenticationOptions({
+      rpID: RP_ID,
+      allowCredentials: [{
+        id: credential.credentialID,
+        type: 'public-key',
+      }],
+      userVerification: 'preferred',
+    });
+    await redis.set('webauthn:challenge:admin', options.challenge, 'EX', 300);
+    res.json(options);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/dashboard/verify-authentication', async (req, res) => {
+  try {
+    const expectedChallenge = await redis.get('webauthn:challenge:admin');
+    const credentialData = await redis.get('webauthn:credential:admin');
+    if (!credentialData) throw new Error('No credential stored');
+    
+    const credential = JSON.parse(credentialData);
+    const verification = await verifyAuthenticationResponse({
+      response: req.body,
+      expectedChallenge,
+      expectedOrigin: ORIGIN,
+      expectedRPID: RP_ID,
+      authenticator: {
+        credentialID: Buffer.from(credential.credentialID, 'base64'),
+        credentialPublicKey: Buffer.from(credential.credentialPublicKey, 'base64'),
+        counter: credential.counter,
+      },
+    });
+
+    if (verification.verified) {
+      const sessionId = Math.random().toString(36).substring(2);
+      await redis.set(`session:${sessionId}`, 'admin', 'EX', 3600);
+      res.cookie('session_id', sessionId, { path: '/', httpOnly: true, sameSite: 'strict', maxAge: 3600000 });
+      res.json({ verified: true });
+    } else {
+      res.status(400).json({ error: 'Authentication failed' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/dashboard/data', async (req, res) => {
+  try {
+    const sessionId = req.cookies.session_id || req.headers.authorization?.split(' ')[1];
+    if (!sessionId || !(await redis.get(`session:${sessionId}`))) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Fetch learning notes from Redis
+    const notesRaw = await redis.lrange('notes:all', 0, 100);
+    const data = notesRaw.map(n => JSON.parse(n));
+    res.json({ success: true, data });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
