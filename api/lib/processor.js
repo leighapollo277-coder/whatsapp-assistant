@@ -489,7 +489,7 @@ Current Time: ${nowHK}`;
 返回最新的完整內容版本（繁體中文）。`;
     }
 
-    const models = ['gemini-flash-lite-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest'];
+    const models = ['gemini-flash-lite-latest'];
     let transcription = null;
 
     try {
