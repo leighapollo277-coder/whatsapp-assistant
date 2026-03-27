@@ -436,7 +436,7 @@ JSON Output: {
 }
 Current Time: ${nowHK}`;
 
-    const models = ['gemini-flash-lite-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest'];
+    const models = ['gemini-flash-lite-latest'];
     let extractionResult = null;
 
     try {
@@ -613,7 +613,7 @@ async function processLink(targetUrl, From, messagingClient, config, redis, cach
       GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
     }
 
-    const models = ['gemini-flash-lite-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-002', 'gemini-1.5-pro-latest'];
+    const models = ['gemini-flash-lite-latest'];
     const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
     let finalContent = null;
     let successModel = null;
@@ -750,14 +750,7 @@ async function processImage(imageUrl, imageMime, From, messagingClient, config, 
     // 2. Download Media
     const imgBuffer = await messagingClient.downloadMedia(imageUrl);
     
-    const models = [
-      'gemini-flash-lite-latest',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-flash-002',
-      'gemini-1.5-pro-latest'
-    ];
+    const models = ['gemini-flash-lite-latest'];
 
     const prompt = `你是一個專業的事實查核與教育助手。請對輸入內容進行深度分析，輸出必須嚴格包含以下三個部分，並使用指定的分隔符號隔開：
 
@@ -894,14 +887,7 @@ async function processDeepDive(keyword, context, From, messagingClient, config, 
     GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
   }
 
-  const models = [
-    'gemini-flash-lite-latest',
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-flash-002',
-    'gemini-1.5-pro-latest'
-  ];
+  const models = ['gemini-flash-lite-latest'];
 
   const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
 
