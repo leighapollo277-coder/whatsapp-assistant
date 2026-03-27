@@ -154,128 +154,128 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
   // 2. Initial Round-Robin offset
   let keyOffset = Math.floor(Math.random() * apiKeys.length);
 
-  for (let mIdx = 0; mIdx < modelList.length; mIdx++) {
-    const model = modelList[mIdx];
+  for (let round = 1; round <= 2; round++) {
+    for (let mIdx = 0; mIdx < modelList.length; mIdx++) {
+      const model = modelList[mIdx];
 
-    for (let kIdx = 0; kIdx < apiKeys.length; kIdx++) {
-      // Apply offset for round-robin
-      const actualKIdx = (kIdx + keyOffset) % apiKeys.length;
-      const key = apiKeys[actualKIdx];
-      const keyShort = `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
+      for (let kIdx = 0; kIdx < apiKeys.length; kIdx++) {
+        // Apply offset for round-robin
+        const actualKIdx = (kIdx + keyOffset) % apiKeys.length;
+        const key = apiKeys[actualKIdx];
+        const keyShort = `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
 
-      // 3. Check Cumulative Timeout (45s)
-      if (Date.now() - startTime > 45000) {
-        throw new Error(`[callGeminiApi] Global timeout reached after ${auditTrail.length} attempts.`);
-      }
-
-      // 4. Check Redis Health Status
-      if (redis) {
-        const status = await redis.get(`key_status:${model}:${key}`);
-        if (status && status.startsWith('FAILED')) {
-          const [, timestamp] = status.split(':');
-          const elapsed = Date.now() - parseInt(timestamp);
-          if (elapsed < 1800000) { // 30 min cooldown
-            console.log(`[callGeminiApi] Skipping ${model} with Key ${actualKIdx + 1} (In Cooldown)`);
-            continue;
-          }
-        }
-      }
-
-      if (onRetry && (mIdx > 0 || kIdx > 0)) {
-        await onRetry(`正在嘗試 ${model} (金鑰 #${actualKIdx + 1})...`);
-      }
-
-      let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-
-      // 5. Build Generic Payload
-      const payloadContents = { text: prompt };
-      const parts = [payloadContents];
-
-      if (mediaData) {
-        // mediaData can be a Google-format object or a base64 string/buffer
-        if (typeof mediaData === 'string' || Buffer.isBuffer(mediaData)) {
-          // Assume it's voice if it's a buffer/string and we are in voice context? 
-          // Better to let caller pass the exact structure but here we handle common cases.
-          parts.push({ inline_data: { mime_type: 'audio/mp3', data: mediaData.toString('base64') } });
-        } else {
-          parts.push(mediaData);
-        }
-      }
-
-      const payload = { contents: [{ parts }] };
-      if (tools) payload.tools = tools;
-
-      console.log(`[callGeminiApi] Attempt ${auditTrail.length + 1}: ${model} | Key #${actualKIdx + 1}`);
-
-      try {
-        const response = await axios.post(geminiUrl, payload, {
-          timeout: 30000,
-          headers: { 'Content-Type': 'application/json' }
-        });
-
-        const data = response.data;
-
-        // 6. Safety Filter Detection (200 OK but blocked)
-        const candidate = data.candidates?.[0];
-        if (candidate?.finishReason === 'SAFETY') {
-          console.warn(`[callGeminiApi] BLOCKED by safety filters on ${model}`);
-          throw { response: { status: 403, data: { error: { message: "Content blocked by safety filters" } } } };
+        // 3. Check Cumulative Timeout (45s)
+        if (Date.now() - startTime > 45000) {
+          throw new Error(`[callGeminiApi] Global timeout reached after ${auditTrail.length} attempts.`);
         }
 
-        if (!candidate?.content) {
-          throw new Error("Empty response content from Gemini.");
-        }
-
-        console.log(`[callGeminiApi] SUCCESS with ${model} (Key #${actualKIdx + 1})`);
-        if (redis) await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
-
-        return data;
-
-      } catch (err) {
-        const status = err.response?.status;
-        const errMsg = err.response?.data?.error?.message || err.message;
-        console.warn(`[callGeminiApi] FAILED: ${model} | Key #${actualKIdx + 1} | HTTP ${status || 'ERR'} | ${errMsg}`);
-
-        auditTrail.push({ model, keyIndex: actualKIdx + 1, status, error: errMsg });
-
-        // Update Redis Health on failure
-        if (redis && (status === 429 || (status >= 500 && status < 600))) {
-          await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', 1800);
-        }
-
-        // Region/Model Not Found Fallback (or Tool Discrepancy)
-        if (status === 404 || status === 400) {
-          console.warn(`⚠️ [callGeminiApi] ${model} ${status} on v1beta, trying v1 fallback...`);
-          let v1Url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
-
-          // CRITICAL: Many v1 endpoints do not support 'tools' (Google Search)
-          const v1Payload = { contents: payload.contents };
-
-          try {
-            const v1Res = await axios.post(v1Url, v1Payload, { timeout: 15000 });
-            if (v1Res.data.candidates?.[0]?.content) {
-              console.log(`[callGeminiApi] SUCCESS with ${model} (v1 fallback, Key #${actualKIdx + 1})`);
-              if (redis) {
-                await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
-              }
-              return v1Res.data;
-            } else {
-              throw new Error("Empty response content from Gemini (v1 fallback).");
+        // 4. Check Redis Health Status (Round 1 only)
+        if (redis && round === 1) {
+          const status = await redis.get(`key_status:${model}:${key}`);
+          if (status && status.startsWith('FAILED')) {
+            const [, timestamp] = status.split(':');
+            const elapsed = Date.now() - parseInt(timestamp);
+            if (elapsed < 1800000) { // 30 min cooldown
+              console.log(`[callGeminiApi] Round 1: Skipping ${model} with Key ${actualKIdx + 1} (In Cooldown)`);
+              continue;
             }
-          } catch (v1Err) {
-            const v1Status = v1Err.response?.status;
-            const v1Msg = v1Err.response?.data?.error?.message || v1Err.message || "";
-            console.error(`[callGeminiApi] v1 Fallback FAILED: ${model} | HTTP ${v1Status || 'ERR'} | ${v1Msg}`);
           }
         }
 
-        // If it's a 400 (Bad Request) or 403 (Safety), don't keep trying this specific prompt with other keys
-        if (status === 400 || status === 403) {
-          throw new Error(`Gemini Error: ${errMsg}`);
+        if (round === 2) {
+          console.log(`[callGeminiApi] Round 2: Force Refresh for ${model} using Key ${actualKIdx + 1} (Ignoring Cooldown)`);
         }
 
-        // Continue to next key for 429 or 5xx
-        continue;
+        if (onRetry && (mIdx > 0 || kIdx > 0 || round > 1)) {
+          await onRetry(`正在嘗試 ${model} (金鑰 #${actualKIdx + 1})... [Round ${round}]`);
+        }
+
+        let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+
+        // 5. Build Generic Payload
+        const payloadContents = { text: prompt };
+        const parts = [payloadContents];
+
+        if (mediaData) {
+          if (typeof mediaData === 'string' || Buffer.isBuffer(mediaData)) {
+            parts.push({ inline_data: { mime_type: 'audio/mp3', data: mediaData.toString('base64') } });
+          } else {
+            parts.push(mediaData);
+          }
+        }
+
+        const payload = { contents: [{ parts }] };
+        if (tools) payload.tools = tools;
+
+        console.log(`[callGeminiApi] Round ${round} | Attempt ${auditTrail.length + 1}: ${model} | Key #${actualKIdx + 1}`);
+
+        try {
+          const response = await axios.post(geminiUrl, payload, {
+            timeout: 30000,
+            headers: { 'Content-Type': 'application/json' }
+          });
+
+          const data = response.data;
+
+          // 6. Safety Filter Detection (200 OK but blocked)
+          const candidate = data.candidates?.[0];
+          if (candidate?.finishReason === 'SAFETY') {
+            console.warn(`[callGeminiApi] BLOCKED by safety filters on ${model}`);
+            throw { response: { status: 403, data: { error: { message: "Content blocked by safety filters" } } } };
+          }
+
+          if (!candidate?.content) {
+            throw new Error("Empty response content from Gemini.");
+          }
+
+          console.log(`[callGeminiApi] SUCCESS with ${model} (Key #${actualKIdx + 1})`);
+          if (redis) await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
+
+          return data;
+
+        } catch (err) {
+          const status = err.response?.status;
+          const errMsg = err.response?.data?.error?.message || err.message;
+          console.warn(`[callGeminiApi] FAILED: ${model} | Key #${actualKIdx + 1} | HTTP ${status || 'ERR'} | ${errMsg}`);
+
+          auditTrail.push({ model, keyIndex: actualKIdx + 1, status, error: errMsg });
+
+          // Update Redis Health on failure
+          if (redis && (status === 429 || (status >= 500 && status < 600))) {
+            await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', 1800);
+          }
+
+          // Region/Model Not Found Fallback (or Tool Discrepancy)
+          if (status === 404 || status === 400) {
+            console.warn(`⚠️ [callGeminiApi] ${model} ${status} on v1beta, trying v1 fallback...`);
+            let v1Url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`;
+            const v1Payload = { contents: payload.contents };
+
+            try {
+              const v1Res = await axios.post(v1Url, v1Payload, { timeout: 15000 });
+              if (v1Res.data.candidates?.[0]?.content) {
+                console.log(`[callGeminiApi] SUCCESS with ${model} (v1 fallback, Key #${actualKIdx + 1})`);
+                if (redis) {
+                  await redis.set(`key_status:${model}:${key}`, `WORKING:${Date.now()}`, 'EX', 3600);
+                }
+                return v1Res.data;
+              } else {
+                throw new Error("Empty response content from Gemini (v1 fallback).");
+              }
+            } catch (v1Err) {
+              const v1Status = v1Err.response?.status;
+              const v1Msg = v1Err.response?.data?.error?.message || v1Err.message || "";
+              console.error(`[callGeminiApi] v1 Fallback FAILED: ${model} | HTTP ${v1Status || 'ERR'} | ${v1Msg}`);
+            }
+          }
+
+          if (status === 400 || status === 403) {
+            throw new Error(`Gemini Error: ${errMsg}`);
+          }
+
+          // Continue to next key for 429 or 5xx
+          continue;
+        }
       }
     }
   }
