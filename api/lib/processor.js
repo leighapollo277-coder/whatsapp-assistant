@@ -408,8 +408,7 @@ JSON Output: { "intent": "INTENT_NAME", "action": "動作（如 DELETE）" }`;
           if (state.keywords && state.keywords[selection - 1]) {
             const keyword = state.keywords[selection - 1];
             await messagingClient.sendText(`📌 正在深入解析「${keyword}」... ⏳`);
-            await processDeepDive(keyword, state.context, From, messagingClient, config, redis, skipVoice, skipText);
-            return { handled: true };
+            return { handled: true, deepDive: { keyword, context: state.context } };
           }
         }
       }

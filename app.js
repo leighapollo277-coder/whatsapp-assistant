@@ -92,6 +92,19 @@ app.post('/api/webhook', async (req, res) => {
         }));
         await redis.sadd('retry:pending', linkCode);
       }
+    } else if (procResult.deepDive) {
+      const sid = body.SmsSid || body.MessageSid || `dd_${Date.now()}`;
+      const ddCode = `v_${sid}`;
+      if (redis) {
+        await redis.hset('retry:task', ddCode, JSON.stringify({
+          taskType: 'deep-dive', platform: 'whatsapp',
+          keyword: procResult.deepDive.keyword,
+          context: procResult.deepDive.context,
+          From: body.From, To: body.To,
+          queuedAt: Date.now(), nextRun: Date.now() + 2000 
+        }));
+        await redis.sadd('retry:pending', ddCode);
+      }
     } else if (procResult.imageUrl) {
       const sid = body.SmsSid || body.MessageSid || `img_${Date.now()}`;
       const imgCode = `v_${sid}`;
@@ -402,6 +415,9 @@ async function runProcessorLoop() {
           await processor.processImage(task.imageUrl, task.imageMime, task.From, taskMessagingClient, config, redis);
         } else if (task.taskType === 'voice-fact-check') {
           await processor.processRequest(task, taskMessagingClient, null, config, redis, false, true);
+        } else if (task.taskType === 'deep-dive') {
+          console.log(`🧠 Executing Deep-Dive for keyword: ${task.keyword}`);
+          await processor.processDeepDive(task.keyword, task.context, task.From, taskMessagingClient, config, redis);
         }
 
         // Cleanup on success
