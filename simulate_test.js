@@ -89,7 +89,37 @@ async function runTest2(imageUrl) {
 const testType = process.argv[2] || 'all';
 const imgUrl = process.argv[3];
 
+async function runTest3() {
+    console.log("🚀 Starting Test 3: Deep-Dive Numeric Reply...");
+    const payload = qs.stringify({
+        Body: "1",
+        From: "whatsapp:+85291234567",
+        To: "whatsapp:+14155238886"
+    });
+    try {
+        await axios.post(SERVER_URL, payload, {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+        console.log("✅ Numeric reply '1' sent.");
+        
+        console.log("⏳ Waiting 30s for AI deep-dive analysis...");
+        await new Promise(r => setTimeout(r, 30000));
+        
+        const logs = execSync(`export RENDER_API_KEY=rnd_pNra6ZPZyfWDnLJD1pwmxmjrck2P && render logs -r ${SERVICE_ID} --limit 200 --output json`).toString();
+        if (logs.includes("深度解析") || logs.includes("Deep Dive successful") || logs.includes("Deep-Dive successful")) {
+            console.log("🎉 SUCCESS: Numeric reply triggered Deep-Dive!");
+        } else {
+            console.log("❌ FAILURE: Could not find Deep-Dive logs. (Check if previous test created a menu state)");
+        }
+    } catch (err) {
+        console.error("❌ Test 3 Error:", err.message);
+    }
+}
+
 (async () => {
-    if (testType === '1' || testType === 'all') await runTest1();
+    // Run sequentially to ensure state is created
+    await runTest1();
+    await runTest3(); 
+    // runTest2 requires a manual image URL, skip for now unless provided
     if (testType === '2' || testType === 'all') await runTest2(imgUrl);
 })();

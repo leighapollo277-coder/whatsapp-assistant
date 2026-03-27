@@ -9,7 +9,7 @@ const {
   generateAuthenticationOptions, 
   verifyAuthenticationResponse 
 } = require('@simplewebauthn/server');
-const { processRequest, processDeepDive } = require('./api/lib/processor');
+const { processRequest, processDeepDive, processLink, processImage } = require('./api/lib/processor');
 const path = require('path');
 require('dotenv').config();
 
@@ -91,6 +91,17 @@ app.post('/api/webhook', async (req, res) => {
           queuedAt: Date.now(), nextRun: Date.now() + 2000 
         }));
         await redis.sadd('retry:pending', linkCode);
+      }
+    } else if (procResult.imageUrl) {
+      const sid = body.SmsSid || body.MessageSid || `img_${Date.now()}`;
+      const imgCode = `v_${sid}`;
+      if (redis) {
+        await redis.hset('retry:task', imgCode, JSON.stringify({
+          taskType: 'image-check', platform: 'whatsapp',
+          imageUrl: procResult.imageUrl, imageMime: procResult.imageMime, From: body.From, To: body.To,
+          queuedAt: Date.now(), nextRun: Date.now() + 2000 
+        }));
+        await redis.sadd('retry:pending', imgCode);
       }
     } else if (procResult.handled && !procResult.result) {
       const isVoice = body.MediaContentType0 && (body.MediaContentType0.includes('audio') || body.MediaContentType0.includes('video'));
@@ -378,17 +389,19 @@ async function startBackgroundProcessor() {
           const config = getConfig();
           const twilioClient = twilio(config.twilioSid, config.twilioAuth);
           
-          let messagingClient;
+          let taskMessagingClient;
           if (task.platform === 'whatsapp') {
-            messagingClient = new TwilioMessagingClient(twilioClient, task.To, task.From);
+            taskMessagingClient = new TwilioMessagingClient(twilioClient, task.To, task.From);
           } else {
-            messagingClient = new TelegramMessagingClient(config.telegramToken, task.From);
+            taskMessagingClient = new TelegramMessagingClient(config.telegramToken, task.From);
           }
 
           if (task.taskType === 'web-link') {
-            await require('./api/lib/processor').processLink(task.linkUrl, task.From, messagingClient, config, redis);
+            await processLink(task.linkUrl, task.From, taskMessagingClient, config, redis);
+          } else if (task.taskType === 'image-check') {
+            await processImage(task.imageUrl, task.imageMime, task.From, taskMessagingClient, config, redis);
           } else if (task.taskType === 'voice-fact-check') {
-            await processRequest(task, messagingClient, null, config, redis, false, true);
+            await processRequest(task, taskMessagingClient, null, config, redis, false, true);
           }
 
           // Cleanup on success

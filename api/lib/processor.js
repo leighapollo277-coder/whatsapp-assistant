@@ -299,139 +299,15 @@ async function processRequest(payload, messagingClient, tasksApi, config, redis,
   // Google Auth for Sheets is no longer needed; focusing on Redis as Primary Database.
 
   // 1. Handle Image (Fact-Check)
+  // 1. Handle Image (Fact-Check)
   if (MediaUrl0 && MediaContentType0 && MediaContentType0.includes('image')) {
     // 1. Send immediate processing feedback
     console.log(`Processing image from ${From}`);
     await messagingClient.sendText(`🖼️ 收到圖片！正在進行事實查核... ⏳\n\n(💤 提示：初次使用如需喚醒系統，可能會有 60 秒延遲。)\n📦 版本：${DEPLOY_TIME}`);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    const imgBuffer = await messagingClient.downloadMedia(MediaUrl0);
-
-    // Backup to Catbox for permanent storage before queuing
-    const backupUrl = await uploadToCatbox(imgBuffer, MediaContentType0, `factcheck_${Date.now()}.jpg`);
-    if (backupUrl) {
-      payload.MediaUrl0 = backupUrl; // Update original payload so the queue persists the Catbox URL
-    }
-
-    const models = [
-      'gemini-flash-lite-latest',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-flash-002',
-      'gemini-1.5-pro-latest'
-    ];
-
-    const prompt = `你是一個專業的事實查核與教育助手。請對輸入內容進行深度分析，輸出必須嚴格包含以下三個部分，並使用指定的分隔符號隔開：
-
-【第一部分：事實查核】
-1. **結論**：[真實 / 虛假 / 誤導 / 有待核實]
-2. **信心分數**：(標註 0-1)
-3. **簡潔摘要**：用 2-3 句話總結發現。
-4. **查核證據**：列出 2-3 個關鍵事實，並附上完整的來源網址 (URL)。這些來源網址對於信任度至關重要，必須提供。
-
---- 知識點解析 ---
-【第二部分：教育解析】
-請用簡單易懂的廣東話口語或書面語，解釋這件事背後的科學、歷史 or 社會知識點，幫助用戶學習新知識。
-
---- 延伸閱讀 ---
-【第三部分：關鍵字菜單】
-請從上述解析中提取 9 個值得深入了解的關鍵字或概念，並以純數字編號列表：
-1. [關鍵字A]
-...
-9. [關鍵字I]
-
-CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁使用書面語（例如用「係」唔好用「是」，用「佢地」唔好用「他們」）。Use Google Search grounding.`;
-
-    if (cachedResult) {
-      console.log('♻️ Using cached Gemini result for consistency.');
-      factCheckResult = cachedResult;
-      successModel = 'CACHED';
-    } else {
-      const mediaData = { inline_data: { mime_type: MediaContentType0, data: imgBuffer.toString('base64') } };
-      const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, mediaData, [{ google_search: {} }], async (msg) => {
-        try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) { }
-      }, redis);
-
-      factCheckResult = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (factCheckResult) {
-        successModel = "Gemini"; // callGeminiApi logs specific model
-      }
-    }
-
-    if (!factCheckResult) {
-      throw new Error('All Gemini models exhausted or failed (429).');
-    }
-
-    console.log(`✅ Fact-check successful using ${successModel}`);
-
-    // Shorten URLs
-    const foundUrls = factCheckResult.match(/(https?:\/\/[^\s\)]+)/g) || [];
-    for (const longUrl of [...new Set(foundUrls)]) {
-      const short = await shortenUrl(longUrl);
-      factCheckResult = factCheckResult.split(longUrl).join(short);
-    }
-
-    // Split and send
-    let factCheckPart = factCheckResult;
-    let explanationPart = "";
-    let menuPart = "";
-
-    // Split logic using regex for robustness
-    const analysisRegex = /---+\s*知識點解析\s*---+/;
-    const readingRegex = /---+\s*延伸閱讀\s*---+/;
-
-    if (analysisRegex.test(factCheckResult)) {
-      const parts = factCheckResult.split(analysisRegex);
-      factCheckPart = parts[0].trim();
-      const remainder = parts[1].trim();
-
-      if (readingRegex.test(remainder)) {
-        const subParts = remainder.split(readingRegex);
-        explanationPart = subParts[0].trim();
-        menuPart = subParts[1].trim();
-      } else {
-        explanationPart = remainder;
-      }
-    }
-
-    if (!skipText) {
-      const CHUNK_SIZE = 1500;
-      for (let i = 0; i < factCheckResult.length; i += CHUNK_SIZE) {
-        await messagingClient.sendText(`💡 事實查核與解析：\n\n${factCheckResult.substring(i, i + CHUNK_SIZE)}`);
-      }
-    }
-
-    if (!skipVoice) {
-      if (factCheckPart) {
-        await generateAndSendVoice(factCheckPart, messagingClient, "🎙️ 正在生成查核結果語音...");
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
-      if (explanationPart) {
-        await generateAndSendVoice(explanationPart, messagingClient, "🎙️ 正在生成知識點解析語音...");
-      }
-    }
-
-    if (redis && menuPart) {
-      const keywords = [];
-      const lines = menuPart.split('\n');
-      for (const line of lines) {
-        const match = line.match(/^\d+[\.\、]\s*(.+)$/);
-        if (match) keywords.push(match[1].trim().replace(/[\*\[\]]/g, ''));
-      }
-      if (keywords.length > 0) {
-        const menuId = Math.floor(1000 + Math.random() * 9000).toString();
-        const menuState = { keywords, context: factCheckPart.substring(0, 500) };
-        await redis.set(`learning_state:${From}:${menuId}`, JSON.stringify(menuState), 'EX', 86400); // 24h
-        await redis.set(`latest_learning_state_id:${From}`, menuId, 'EX', 86400);
-
-        if (!skipText) {
-          await messagingClient.sendText(`📌 [#${menuId}] 回覆數字深入學習，或輸入「${menuId} 數字」回顧舊話題。`);
-        }
-      }
-    }
-
-    return { handled: true, result: factCheckResult };
+    
+    // Instead of processing in-line, return for background queue
+    // We already send a 1s delay and feedback above.
+    return { handled: true, imageUrl: MediaUrl0, imageMime: MediaContentType0 };
   }
 
   // 2. Handle Text (Commands, URL, or Confirmation)
@@ -512,6 +388,30 @@ JSON Output: { "intent": "INTENT_NAME", "action": "動作（如 DELETE）" }`;
         const targetUrl = urlMatch[0];
         await messagingClient.sendText(`📖 正在為您讀取網頁內容並準備導讀... 請稍候 ⏳\n📦 版本：${DEPLOY_TIME}`);
         return { handled: true, linkUrl: targetUrl };
+      }
+    }
+
+    // C. Handle Learning Deep-Dive (Regex for 1-9 or "ID [1-9]")
+    const deepDiveMatch = Body.trim().match(/^(\d{4}\s+)?([1-9])$/);
+    if (redis && deepDiveMatch) {
+      let menuId = deepDiveMatch[1] ? deepDiveMatch[1].trim() : null;
+      const selection = parseInt(deepDiveMatch[2], 10);
+
+      if (!menuId) {
+        menuId = await redis.get(`latest_learning_state_id:${From}`);
+      }
+
+      if (menuId) {
+        const stateData = await redis.get(`learning_state:${From}:${menuId}`);
+        if (stateData) {
+          const state = JSON.parse(stateData);
+          if (state.keywords && state.keywords[selection - 1]) {
+            const keyword = state.keywords[selection - 1];
+            await messagingClient.sendText(`📌 正在深入解析「${keyword}」... ⏳`);
+            await processDeepDive(keyword, state.context, From, messagingClient, config, redis, skipVoice, skipText);
+            return { handled: true };
+          }
+        }
       }
     }
   }
@@ -828,6 +728,156 @@ ${combinedText}`;
   } catch (err) {
     console.error('ProcessLink Err:', err.message);
     await messagingClient.sendText(`❌ 導讀失敗: ${err.message}`);
+    return { handled: false };
+  }
+}
+
+/**
+ * Helper: Process Image Fact-Check In Background
+ */
+async function processImage(imageUrl, imageMime, From, messagingClient, config, redis, cachedResult = null) {
+  try {
+    // 1. Initialize API Key
+    if (config?.GEMINI_API_KEY) {
+      GEMINI_API_KEY = config.GEMINI_API_KEY;
+    } else if (config?.geminiKey) {
+      GEMINI_API_KEY = config.geminiKey;
+    }
+    if (!GEMINI_API_KEY) {
+      GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+    }
+
+    // 2. Download Media
+    const imgBuffer = await messagingClient.downloadMedia(imageUrl);
+    
+    const models = [
+      'gemini-flash-lite-latest',
+      'gemini-2.0-flash',
+      'gemini-2.0-flash-lite',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash-002',
+      'gemini-1.5-pro-latest'
+    ];
+
+    const prompt = `你是一個專業的事實查核與教育助手。請對輸入內容進行深度分析，輸出必須嚴格包含以下三個部分，並使用指定的分隔符號隔開：
+
+【第一部分：事實查核】
+1. **結論**：[真實 / 虛假 / 誤導 / 有待核實]
+2. **信心分數**：(標註 0-1)
+3. **簡潔摘要**：用 2-3 句話總結發現。
+4. **查核證據**：列出 2-3 個關鍵事實，並附上完整的來源網址 (URL)。這些來源網址對於信任度至關重要，必須提供。
+
+--- 知識點解析 ---
+【第二部分：教育解析】
+請用簡單易懂的廣東話口語或書面語，解釋這件事背後的科學、歷史 or 社會知識點，幫助用戶學習新知識。
+
+--- 延伸閱讀 ---
+【第三部分：關鍵字菜單】
+請從上述解析中提取 9 個值得深入了解的關鍵字或概念，並以純數字編號列表：
+1. [關鍵字A]
+...
+9. [關鍵字I]
+
+CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁使用書面語（例如用「係」唔好用「是」，用「佢地」唔好用「他們」）。Use Google Search grounding.`;
+
+    let factCheckResult = null;
+    let successModel = null;
+
+    if (cachedResult) {
+      console.log('♻️ Using cached Gemini result.');
+      factCheckResult = cachedResult;
+      successModel = 'CACHED';
+    } else {
+      const mediaData = { inline_data: { mime_type: imageMime, data: imgBuffer.toString('base64') } };
+      const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, mediaData, [{ google_search: {} }], async (msg) => {
+        try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) { }
+      }, redis);
+
+      factCheckResult = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (factCheckResult) {
+        successModel = "Gemini";
+      }
+    }
+
+    if (!factCheckResult) throw new Error('事實查核失敗 (Gemini 沒回應)');
+
+    console.log(`✅ Fact-check successful using ${successModel}`);
+
+    // Shorten URLs
+    const foundUrls = factCheckResult.match(/(https?:\/\/[^\s\)]+)/g) || [];
+    for (const longUrl of [...new Set(foundUrls)]) {
+      const short = await shortenUrl(longUrl);
+      factCheckResult = factCheckResult.split(longUrl).join(short);
+    }
+
+    // Split logic
+    let factCheckPart = factCheckResult;
+    let explanationPart = "";
+    let menuPart = "";
+    const analysisRegex = /---+\s*知識點解析\s*---+/;
+    const readingRegex = /---+\s*延伸閱讀\s*---+/;
+
+    if (analysisRegex.test(factCheckResult)) {
+      const parts = factCheckResult.split(analysisRegex);
+      factCheckPart = parts[0].trim();
+      const remainder = parts[1].trim();
+      if (readingRegex.test(remainder)) {
+        const subParts = remainder.split(readingRegex);
+        explanationPart = subParts[0].trim();
+        menuPart = subParts[1].trim();
+      } else {
+        explanationPart = remainder;
+      }
+    }
+
+    // 1. Send Text
+    const CHUNK_SIZE = 1500;
+    for (let i = 0; i < factCheckResult.length; i += CHUNK_SIZE) {
+      await messagingClient.sendText(`💡 事實查核與解析：\n\n${factCheckResult.substring(i, i + CHUNK_SIZE)}`);
+    }
+
+    // 2. Send Voice (Chunked for Full Result)
+    if (factCheckPart) {
+        await messagingClient.sendText("🎙️ 正在生成查核結果語音導讀... ⏳");
+        const voiceChunks = chunkText(factCheckPart, 500);
+        for (let i = 0; i < voiceChunks.length; i++) {
+            const label = voiceChunks.length > 1 ? `第 ${i+1} 部分` : "";
+            await generateAndSendVoice(voiceChunks[i], messagingClient, null, false, label);
+            if (i < voiceChunks.length - 1) await new Promise(r => setTimeout(r, 1500));
+        }
+    }
+    
+    if (explanationPart) {
+        await messagingClient.sendText("🎙️ 正在生成深度解析語音... ⏳");
+        const voiceChunks = chunkText(explanationPart, 500);
+        for (let i = 0; i < voiceChunks.length; i++) {
+            const label = voiceChunks.length > 1 ? `解析 第 ${i+1} 部分` : "";
+            await generateAndSendVoice(voiceChunks[i], messagingClient, null, false, label);
+            if (i < voiceChunks.length - 1) await new Promise(r => setTimeout(r, 1500));
+        }
+    }
+
+    // 3. Save Menu
+    if (redis && menuPart) {
+      const keywords = [];
+      const lines = menuPart.split('\n');
+      for (const line of lines) {
+        const match = line.match(/^\d+[\.\、]\s*(.+)$/);
+        if (match) keywords.push(match[1].trim().replace(/[\*\[\]]/g, ''));
+      }
+      if (keywords.length > 0) {
+        const menuId = Math.floor(1000 + Math.random() * 9000).toString();
+        const menuState = { keywords, context: factCheckPart.substring(0, 500) };
+        await redis.set(`learning_state:${From}:${menuId}`, JSON.stringify(menuState), 'EX', 86400); // 24h
+        await redis.set(`latest_learning_state_id:${From}`, menuId, 'EX', 86400);
+        await messagingClient.sendText(`📌 [#${menuId}] 回覆數字深入學習，或輸入「${menuId} 數字」回顧舊話題。`);
+      }
+    }
+
+    return { handled: true, result: factCheckResult };
+  } catch (err) {
+    console.error('ProcessImage Err:', err.message);
+    await messagingClient.sendText(`❌ 查核失敗: ${err.message}`);
     return { handled: false };
   }
 }
