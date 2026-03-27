@@ -960,7 +960,15 @@ CRITICAL: TRADITIONAL CHINESE only.`;
       }
     }
 
-    if (!skipVoice && explanationPart) await generateAndSendVoice(explanationPart, messagingClient, "🎙️ 正在生成深度解析語音...");
+    if (!skipVoice && explanationPart) {
+      await messagingClient.sendText("🎙️ 正在生成深度解析語音... ⏳");
+      const voiceChunks = chunkText(explanationPart, 500);
+      for (let i = 0; i < voiceChunks.length; i++) {
+        const label = voiceChunks.length > 1 ? `解析 第 ${i+1} 部分` : "";
+        await generateAndSendVoice(voiceChunks[i], messagingClient, null, false, label);
+        if (i < voiceChunks.length - 1) await new Promise(r => setTimeout(r, 1500));
+      }
+    }
 
     if (redis && menuPart) {
       const keywords = [];
