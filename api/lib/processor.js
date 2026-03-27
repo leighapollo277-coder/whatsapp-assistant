@@ -993,6 +993,7 @@ module.exports = {
   generateAndSendVoice,
   processRequest,
   processLink,
+  processImage,
   processDeepDive,
   callGeminiApi
 };

@@ -350,95 +350,105 @@ app.get('/api/admin/tasks', async (req, res) => {
   }
 });
 
-// --- Background Processor ---
-async function startBackgroundProcessor() {
+/**
+ * Background Processor: Sequential Loop with recursive setTimeout
+ */
+async function runProcessorLoop() {
   if (!redis) return;
-  console.log('🤖 Background Processor Started');
   
-  setInterval(async () => {
-    try {
-      const pendingIds = await redis.smembers('retry:pending');
-      if (pendingIds.length === 0) return;
+  try {
+    const pendingIds = await redis.smembers('retry:pending');
+    for (const id of pendingIds) {
+      const taskRaw = await redis.hget('retry:task', id);
+      if (!taskRaw) {
+        await redis.srem('retry:pending', id);
+        continue;
+      }
 
-      for (const id of pendingIds) {
-        const taskRaw = await redis.hget('retry:task', id);
-        if (!taskRaw) {
-          await redis.srem('retry:pending', id);
-          continue;
-        }
+      const task = JSON.parse(taskRaw);
+      if (task.isProcessing || (task.nextRun && task.nextRun > Date.now())) continue;
 
-        const task = JSON.parse(taskRaw);
-        if (task.isProcessing || (task.nextRun && task.nextRun > Date.now())) continue;
+      // Lock & Process
+      task.isProcessing = true;
+      task.startTime = task.startTime || Date.now();
+      await redis.hset('retry:task', id, JSON.stringify(task));
 
-        // Lock & Process
-        task.isProcessing = true;
-        task.startTime = task.startTime || Date.now();
-        await redis.hset('retry:task', id, JSON.stringify(task));
+      // Abandonment Detection (15 min cutoff)
+      if (Date.now() - task.startTime > 900000) {
+        console.warn(`⚠️ Task ${id} timed out (15m), abandoning.`);
+        await redis.hdel('retry:task', id);
+        await redis.srem('retry:pending', id);
+        continue;
+      }
 
-        // Step 3: Abandonment Detection (15 min cutoff)
-        if (task.startTime && (Date.now() - task.startTime > 900000)) {
-          console.warn(`⚠️ Task ${id} timed out (15m), abandoning.`);
-          await redis.hdel('retry:task', id);
-          await redis.srem('retry:pending', id);
-          continue;
-        }
-
-        console.log(`📡 Processing task ${id} (${task.taskType})`);
+      console.log(`📡 Processing task ${id} (${task.taskType})`);
+      
+      try {
+        const config = getConfig();
+        const twilioClient = twilio(config.twilioSid, config.twilioAuth);
         
-        try {
-          const config = getConfig();
-          const twilioClient = twilio(config.twilioSid, config.twilioAuth);
-          
-          let taskMessagingClient;
-          if (task.platform === 'whatsapp') {
-            taskMessagingClient = new TwilioMessagingClient(twilioClient, task.To, task.From);
-          } else {
-            taskMessagingClient = new TelegramMessagingClient(config.telegramToken, task.From);
-          }
+        let taskMessagingClient;
+        if (task.platform === 'whatsapp') {
+          taskMessagingClient = new TwilioMessagingClient(twilioClient, task.To, task.From);
+        } else {
+          taskMessagingClient = new TelegramMessagingClient(config.telegramToken, task.From);
+        }
 
-          if (task.taskType === 'web-link') {
-            await processLink(task.linkUrl, task.From, taskMessagingClient, config, redis);
-          } else if (task.taskType === 'image-check') {
-            await processImage(task.imageUrl, task.imageMime, task.From, taskMessagingClient, config, redis);
-          } else if (task.taskType === 'voice-fact-check') {
-            await processRequest(task, taskMessagingClient, null, config, redis, false, true);
-          }
+        if (task.taskType === 'web-link') {
+          await processLink(task.linkUrl, task.From, taskMessagingClient, config, redis);
+        } else if (task.taskType === 'image-check') {
+          await processImage(task.imageUrl, task.imageMime, task.From, taskMessagingClient, config, redis);
+        } else if (task.taskType === 'voice-fact-check') {
+          await processRequest(task, taskMessagingClient, null, config, redis, false, true);
+        }
 
-          // Cleanup on success
+        // Cleanup on success
+        await redis.hdel('retry:task', id);
+        await redis.srem('retry:pending', id);
+        console.log(`✅ Task ${id} completed.`);
+      } catch (procErr) {
+        console.error(`❌ Task ${id} failed:`, procErr.stack || procErr.message);
+        
+        task.isProcessing = false;
+        task.retryCount = (task.retryCount || 0) + 1;
+        
+        // Immediate Failure Gate for code errors (Reference/Type/Syntax)
+        const isPermanentError = procErr instanceof ReferenceError || procErr instanceof TypeError || procErr instanceof SyntaxError;
+        
+        if (isPermanentError || task.retryCount > 3) {
           await redis.hdel('retry:task', id);
           await redis.srem('retry:pending', id);
-          console.log(`✅ Task ${id} completed.`);
-        } catch (procErr) {
-          console.error(`❌ Task ${id} failed:`, procErr.message);
-          task.isProcessing = false;
-          task.retryCount = (task.retryCount || 0) + 1;
-          task.nextRun = Date.now() + Math.min(300000, Math.pow(2, task.retryCount) * 10000); // Backoff
+          console.warn(`🗑️ Task ${id} abandoned. Reason: ${isPermanentError ? 'Permanent Code Error' : 'Max Retries'}`);
           
-          if (task.retryCount > 3) { // Reduced from 5 to 3 for faster failure feedback
-            await redis.hdel('retry:task', id);
-            await redis.srem('retry:pending', id);
-            console.warn(`🗑️ Task ${id} abandoned after 3 fails.`);
-            
-            // Step 8: Graceful Failure Notification
-            try {
-              const config = getConfig();
-              const twilioClient = twilio(config.twilioSid, config.twilioAuth);
-              let msgClient;
-              if (task.platform === 'whatsapp') msgClient = new TwilioMessagingClient(twilioClient, task.To, task.From);
-              else msgClient = new TelegramMessagingClient(config.telegramToken, task.From);
-              
-              await msgClient.sendMessage("⚠️ 抱歉，处理该任务失败多次，已停止。请稍后再试或检查链接是否有效。");
-            } catch (e) { console.error('Failed to send failure notification:', e.message); }
-
-          } else {
-            await redis.hset('retry:task', id, JSON.stringify(task));
-          }
+          try {
+             // Notify user of failure
+             const config = getConfig();
+             const twilioClient = twilio(config.twilioSid, config.twilioAuth);
+             let msgClient;
+             if (task.platform === 'whatsapp') msgClient = new TwilioMessagingClient(twilioClient, task.To, task.From);
+             else msgClient = new TelegramMessagingClient(config.telegramToken, task.From);
+             
+             const errorMsg = isPermanentError ? `❌ 系統技術錯誤 (Code Error): ${procErr.message}` : `⚠️ 抱歉，處理該任務失敗多次，已停止。請稍後再試。`;
+             await msgClient.sendMessage(errorMsg);
+          } catch (e) { console.error('Failed to send failure notification:', e.message); }
+        } else {
+          task.nextRun = Date.now() + Math.min(300000, Math.pow(2, task.retryCount) * 10000); // Backoff
+          await redis.hset('retry:task', id, JSON.stringify(task));
         }
       }
-    } catch (loopErr) {
-      console.error('[Processor Loop Error]', loopErr.message);
     }
-  }, 8000); // Check every 8 seconds
+  } catch (loopErr) {
+    console.error('[Processor Loop Error]', loopErr.stack || loopErr.message);
+  } finally {
+    // Schedule next run
+    setTimeout(runProcessorLoop, 8000);
+  }
+}
+
+async function startBackgroundProcessor() {
+  if (!redis) return;
+  console.log('🤖 Background Processor Started (Sequential Mode)');
+  runProcessorLoop();
 }
 
 // Start Server
