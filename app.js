@@ -9,7 +9,7 @@ const {
   generateAuthenticationOptions, 
   verifyAuthenticationResponse 
 } = require('@simplewebauthn/server');
-const { processRequest, processDeepDive, processLink, processImage } = require('./api/lib/processor');
+const { processRequest, processDeepDive } = require('./api/lib/processor');
 const path = require('path');
 require('dotenv').config();
 
@@ -394,12 +394,14 @@ async function runProcessorLoop() {
           taskMessagingClient = new TelegramMessagingClient(config.telegramToken, task.From);
         }
 
+        const processor = require('./api/lib/processor');
+        
         if (task.taskType === 'web-link') {
-          await processLink(task.linkUrl, task.From, taskMessagingClient, config, redis);
+          await processor.processLink(task.linkUrl, task.From, taskMessagingClient, config, redis);
         } else if (task.taskType === 'image-check') {
-          await processImage(task.imageUrl, task.imageMime, task.From, taskMessagingClient, config, redis);
+          await processor.processImage(task.imageUrl, task.imageMime, task.From, taskMessagingClient, config, redis);
         } else if (task.taskType === 'voice-fact-check') {
-          await processRequest(task, taskMessagingClient, null, config, redis, false, true);
+          await processor.processRequest(task, taskMessagingClient, null, config, redis, false, true);
         }
 
         // Cleanup on success
@@ -429,7 +431,7 @@ async function runProcessorLoop() {
              else msgClient = new TelegramMessagingClient(config.telegramToken, task.From);
              
              const errorMsg = isPermanentError ? `❌ 系統技術錯誤 (Code Error): ${procErr.message}` : `⚠️ 抱歉，處理該任務失敗多次，已停止。請稍後再試。`;
-             await msgClient.sendMessage(errorMsg);
+             await msgClient.sendText(errorMsg);
           } catch (e) { console.error('Failed to send failure notification:', e.message); }
         } else {
           task.nextRun = Date.now() + Math.min(300000, Math.pow(2, task.retryCount) * 10000); // Backoff
