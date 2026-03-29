@@ -57,7 +57,8 @@ module.exports = async (req, res) => {
       To: "voicenote_bot",
       MediaUrl0: null,
       MediaContentType0: null,
-      platform: 'telegram'
+      platform: 'telegram',
+      isMock: body.isMock === true // Allow test script to bypass media download
     };
 
     // Handle Voice

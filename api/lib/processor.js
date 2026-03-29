@@ -485,35 +485,48 @@ Current Time: ${nowHK}`;
 
   // B. Handle New Voice or Voice Edit
   if (MediaUrl0 && MediaContentType0 && (MediaContentType0.includes('audio') || MediaContentType0.includes('video'))) {
-    console.log(`Processing voice message from ${From}`);
+    console.log(`Processing voice message from ${From}${payload.isMock ? ' (MOCK MODE)' : ''}`);
     await messagingClient.sendText("🎙️ 收到語音！正在轉換為文字並分析... ⏳\n\n(💤 提示：初次使用如需喚醒系統，可能會有 60 秒延遲。)");
 
-    const buffer = await messagingClient.downloadMedia(MediaUrl0);
+    let transcription = "";
 
-    // Transcribe or Refine
-    let transcriptionPrompt = "";
-    if (!session) {
-      transcriptionPrompt = `請將這段語音轉錄為繁體中文文本。如果是廣東話，請保留口語表達。`;
+    if (payload.isMock) {
+      transcription = "聽日記得買咖啡，仲有我想記低今日學咗點用 Telegram bot";
+      console.log('✅ Mock Mode: Skipping download/transcription, using hardcoded text.');
     } else {
-      transcriptionPrompt = `參考之前的草稿：『${session.currentDraft}』。
+      const buffer = await messagingClient.downloadMedia(MediaUrl0);
+
+      // Transcribe or Refine
+      let transcriptionPrompt = "";
+      if (!session) {
+        transcriptionPrompt = `請將這段語音轉錄為繁體中文文本。如果是廣東話，請保留口語表達。`;
+      } else {
+        transcriptionPrompt = `參考之前的草稿：『${session.currentDraft}』。
 現在用戶提供了新的語音指令，請根據新指令「修改」或「補充」現有草稿。
 返回最新的完整內容版本（繁體中文）。`;
+      }
+
+      const models = ['gemini-flash-lite-latest'];
+
+      try {
+        console.log(`🎙️ Attempting transcription with centralized rotation...`);
+        const mediaData = { inline_data: { mime_type: MediaContentType0, data: buffer.toString("base64") } };
+        const transcriptionResp = await callGeminiApi(models, transcriptionPrompt, GEMINI_API_KEY, mediaData, null, null, redis);
+
+        const transcriptionText = transcriptionResp.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+        if (!transcriptionText) throw new Error("未能識別語音內容。");
+        transcription = transcriptionText;
+      } catch (e) {
+        console.error('Transcription/Processing Error:', e.message);
+        throw new Error("語音轉錄失敗，請稍後再試。");
+      }
     }
 
-    const models = ['gemini-flash-lite-latest'];
-    let transcription = null;
+    if (!transcription) throw new Error("語音轉錄失敗，請稍後再試。");
 
-    try {
-      console.log(`🎙️ Attempting transcription with centralized rotation...`);
-      const mediaData = { inline_data: { mime_type: MediaContentType0, data: buffer.toString("base64") } };
-      const transcriptionResp = await callGeminiApi(models, transcriptionPrompt, GEMINI_API_KEY, mediaData, null, null, redis);
-
-      const transcriptionText = transcriptionResp.candidates[0].content.parts[0].text.trim();
-      if (!transcriptionText) throw new Error("未能識別語音內容。");
-
-      // Detect Intent (NEW_NOTE, LIST_NOTES, MODIFY_NOTE)
-      const intentPrompt = `分析以下語音轉錄內容並判斷用戶意圖。
-內容：${transcriptionText}
+    // Detect Intent (NEW_NOTE, LIST_NOTES, MODIFY_NOTE)
+    const intentPrompt = `分析以下語音轉錄內容並判斷用戶意圖。
+內容：${transcription}
 
 可能的意圖：
 - LIST_NOTES: 用戶想查看、查詢或閱讀之前的筆記/任務。（例如：「幫我查下琴日寫咗咩」、「有咩未做」、「讀返最近嗰幾條俾我聽」）
@@ -522,61 +535,54 @@ Current Time: ${nowHK}`;
 
 JSON Output: { "intent": "INTENT_NAME", "query": "關鍵字（如果是查詢）", "action": "動作（如果是修改，如 DELETE, UPDATE）" }`;
 
-      let intentData = { intent: 'NEW_NOTE' };
-      try {
-        const intentResp = await callGeminiApi(['gemini-2.0-flash'], intentPrompt, GEMINI_API_KEY, null, null, null, redis);
-        const intentText = intentResp.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
-        intentData = JSON.parse(intentText);
-      } catch (e) {
-        console.error('Intent Detection Error:', e.message);
-      }
-
-      // --- CASE 1: LIST_NOTES ---
-      if (intentData.intent === 'LIST_NOTES') {
-        const redisListKey = `notes:${From}`;
-        const recentNotes = redis ? await redis.lrange(redisListKey, 0, 9) : [];
-        if (recentNotes.length === 0) {
-          await messagingClient.sendText("📋 目前沒有筆記內容。");
-          return { handled: true };
-        }
-        const listStr = recentNotes.map((n, i) => {
-          const item = JSON.parse(n);
-          return `${i + 1}. [${item.category}] ${item.refined}`;
-        }).join('\n\n');
-
-        const summaryPrompt = `這是我最近的筆記內容。請用廣東話口語簡短地為我總結這 ${recentNotes.length} 條記錄，像是在跟我對話一樣。
-內容：
-${listStr}`;
-        const summaryResp = await callGeminiApi(['gemini-2.0-flash'], summaryPrompt, GEMINI_API_KEY, null, null, null, redis);
-        const audioSummary = summaryResp.candidates[0].content.parts[0].text.trim();
-
-        await messagingClient.sendText(`📋 最近的筆記：\n\n${listStr}`);
-        await generateAndSendVoice(audioSummary, messagingClient, "🎙️ 正在為您朗讀筆記總結...");
-        return { handled: true };
-      }
-
-      // --- CASE 2: MODIFY_NOTE ---
-      if (intentData.intent === 'MODIFY_NOTE' && intentData.action === 'DELETE') {
-        const redisListKey = `notes:${From}`;
-        const globalKey = 'notes:all';
-        const lastNote = redis ? await redis.lindex(redisListKey, 0) : null;
-        if (lastNote) {
-          await redis.lpop(redisListKey);
-          await redis.lrem(globalKey, 1, lastNote);
-          await messagingClient.sendText("🗑️ 已成功刪除最近的一條筆記。");
-          return { handled: true };
-        }
-      }
-
-      // --- CASE 3: NEW_NOTE ---
-      await messagingClient.sendText(`📝 識別內容：\n"${transcriptionText}"`);
-      transcription = transcriptionText;
+    let intentData = { intent: 'NEW_NOTE' };
+    try {
+      const intentResp = await callGeminiApi(['gemini-2.0-flash'], intentPrompt, GEMINI_API_KEY, null, null, null, redis);
+      const intentText = intentResp.candidates?.[0]?.content?.parts?.[0]?.text?.replace(/```json|```/g, '').trim() || "{}";
+      intentData = JSON.parse(intentText);
     } catch (e) {
-      console.error('Transcription/Processing Error:', e.message);
-      throw new Error("語音轉錄失敗，請稍後再試。");
+      console.error('Intent Detection Error:', e.message);
     }
 
-    if (!transcription) throw new Error("語音轉錄失敗，請稍後再試。");
+    // --- CASE 1: LIST_NOTES ---
+    if (intentData.intent === 'LIST_NOTES') {
+      const redisListKey = `notes:${From}`;
+      const recentNotes = redis ? await redis.lrange(redisListKey, 0, 9) : [];
+      if (recentNotes.length === 0) {
+        await messagingClient.sendText("📋 目前沒有筆記內容。");
+        return { handled: true };
+      }
+      const listStr = recentNotes.map((n, i) => {
+        const item = JSON.parse(n);
+        return `${i + 1}. [${item.category}] ${item.refined}`;
+      }).join('\n\n');
+
+      const summaryPrompt = `這是我最近的筆記內容。請用廣東話口語簡短地為我總結這 ${recentNotes.length} 條記錄，像是在跟我對話一樣。
+內容：
+${listStr}`;
+      const summaryResp = await callGeminiApi(['gemini-2.0-flash'], summaryPrompt, GEMINI_API_KEY, null, null, null, redis);
+      const audioSummary = summaryResp.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+
+      await messagingClient.sendText(`📋 最近的筆記：\n\n${listStr}`);
+      if (audioSummary) await generateAndSendVoice(audioSummary, messagingClient, "🎙️ 正在為您朗讀筆記總結...");
+      return { handled: true };
+    }
+
+    // --- CASE 2: MODIFY_NOTE ---
+    if (intentData.intent === 'MODIFY_NOTE' && intentData.action === 'DELETE') {
+      const redisListKey = `notes:${From}`;
+      const globalKey = 'notes:all';
+      const lastNote = redis ? await redis.lindex(redisListKey, 0) : null;
+      if (lastNote) {
+        await redis.lpop(redisListKey);
+        await redis.lrem(globalKey, 1, lastNote);
+        await messagingClient.sendText("🗑️ 已成功刪除最近的一條筆記。");
+        return { handled: true };
+      }
+    }
+
+    // --- CASE 3: NEW_NOTE ---
+    await messagingClient.sendText(`📝 識別內容：\n"${transcription}"`);
 
     if (!session) {
       // Create new session
