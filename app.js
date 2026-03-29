@@ -64,7 +64,7 @@ function getConfig() {
  * 1. Health Check
  */
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok_v5_stabilized', uptime: process.uptime(), redis: !!redis });
+  res.status(200).json({ status: 'v6_dedicated_voicenote', uptime: process.uptime(), redis: !!redis });
 });
 
 /**
