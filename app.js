@@ -10,6 +10,7 @@ const {
   verifyAuthenticationResponse 
 } = require('@simplewebauthn/server');
 const { processRequest, processDeepDive } = require('./api/lib/processor');
+const voicenoteHandler = require('./api/voicenote');
 const path = require('path');
 require('dotenv').config();
 
@@ -198,7 +199,12 @@ app.post('/api/telegram', async (req, res) => {
 });
 
 /**
- * 4. Dashboard API & WebAuthn
+ * 4. Voicenote Bot Webhook (Dedicated)
+ */
+app.post('/api/voicenote', voicenoteHandler);
+
+/**
+ * 5. Dashboard API & WebAuthn
  */
 app.get('/api/dashboard/stats', async (req, res) => {
   if (!redis) return res.status(500).json({ error: 'No Redis' });
