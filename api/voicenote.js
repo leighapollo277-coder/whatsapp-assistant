@@ -137,13 +137,13 @@ module.exports = async (req, res) => {
         const isVoice = payload.MediaContentType0 && (payload.MediaContentType0.includes('audio') || payload.MediaContentType0.includes('video'));
         if (isVoice) {
           const voiceCode = `v_vn_${Date.now()}`;
-          await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+          await redis.hset('retry:task', voiceCode, JSON.stringify({
             ...payload,
             taskType: 'voice-note-extract', // Specific task type
             platform: 'telegram',
             queuedAt: Date.now(),
             nextRun: Date.now() + 2000
-          }), 'EX', 3600);
+          }));
           await redis.sadd('retry:pending', voiceCode);
         }
       }
