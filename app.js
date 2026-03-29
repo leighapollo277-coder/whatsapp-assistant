@@ -419,7 +419,7 @@ async function runProcessorLoop() {
           await processor.processLink(task.linkUrl, task.From, taskMessagingClient, config, redis);
         } else if (task.taskType === 'image-check') {
           await processor.processImage(task.imageUrl, task.imageMime, task.From, taskMessagingClient, config, redis);
-        } else if (task.taskType === 'voice-fact-check') {
+        } else if (task.taskType === 'voice-fact-check' || task.taskType === 'voice-note-extract') {
           await processor.processRequest(task, taskMessagingClient, null, config, redis, false, true);
         } else if (task.taskType === 'deep-dive') {
           console.log(`🧠 Executing Deep-Dive for keyword: ${task.keyword}`);
