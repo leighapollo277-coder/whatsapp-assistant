@@ -33,6 +33,7 @@ module.exports = async (req, res) => {
 
   const twilioClient = twilio(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN);
   const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const VOICENOTE_BOT_TOKEN = (process.env.VOICENOTE_BOT_TOKEN || '').trim();
   const { TwilioMessagingClient, TelegramMessagingClient } = require('./lib/messaging');
   
   // Auth setup
@@ -111,7 +112,7 @@ module.exports = async (req, res) => {
 
   // 5. Instantiate correct messaging client
   const messagingClient = (task.platform === 'telegram')
-    ? new TelegramMessagingClient(TELEGRAM_BOT_TOKEN, task.From)
+    ? new TelegramMessagingClient((task.To === 'voicenote_bot' ? VOICENOTE_BOT_TOKEN : TELEGRAM_BOT_TOKEN), task.From)
     : new TwilioMessagingClient(twilioClient, task.To, task.From);
 
   // 6. Process the locked task
@@ -193,7 +194,7 @@ module.exports = async (req, res) => {
     try {
       const reminder = JSON.parse(rawReminder);
       const remClient = (reminder.platform === 'telegram')
-        ? new TelegramMessagingClient(TELEGRAM_BOT_TOKEN, reminder.to)
+        ? new TelegramMessagingClient((reminder.To === 'voicenote_bot' ? VOICENOTE_BOT_TOKEN : TELEGRAM_BOT_TOKEN), reminder.to)
         : new TwilioMessagingClient(twilioClient, reminder.To, reminder.to);
       
       console.log(`Sending reminder to ${reminder.to} (${reminder.platform})...`);

@@ -424,15 +424,26 @@ JSON Output: { "intent": "INTENT_NAME", "action": "動作（如 DELETE）" }`;
   if (session && Body && /^(ok|okay|可以|確定|确认|好|得|冇問題|無問題)$/i.test(Body.trim())) {
     await messagingClient.sendText("✅ 收到！正在為您整理並儲存至管理後台... ⏳");
 
-    // Extract Metadata (Category, Tasks)
+    // Extract Metadata (Category, Tasks) - Refined for "Note First" logic
     const nowHK = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
-    const extractionPrompt = `分析以下內容並提取元數據。TRADITIONAL CHINESE only. 
+    const extractionPrompt = `你是一個專業的筆記與任務管理助手。請分析以下語音轉錄內容。
+指令：
+1. **首先**將原始內容整理成一段通順、潤飾過的「筆記」（廣東話口語化）。
+2. **接著**檢查內容中是否包含具體的「任務」或「待辦事項」。
+3. 如果有任務，請將其提取為列表；如果沒有，則返回空列表。
+4. 為這條筆記選擇一個合適的「分類」。
+
+TRADITIONAL CHINESE only.
+
 內容：${session.currentDraft}
-JSON Output: {
-  "refined": "對內容進行潤飾（廣東話口語化）",
-  "category": "分類（例如：工作、生活、財務、學習）",
+
+JSON Output Format:
+{
+  "refined": "潤飾後的筆記內容 (廣東話口語)",
+  "category": "分類（例如：工作、生活、財務、學習、創意）",
   "tasks": ["任務1", "任務2"]
 }
+
 Current Time: ${nowHK}`;
 
     const models = ['gemini-flash-lite-latest'];
