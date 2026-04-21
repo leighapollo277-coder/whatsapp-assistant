@@ -91,7 +91,7 @@ module.exports = async (req, res) => {
         let msg = `📋 目前共有 ${pendingCodes.length} 個重試任務：\n(現在時間：${nowHK})\n`;
         for (let i = 0; i < pendingCodes.length; i++) {
           const code = pendingCodes[i];
-          const rawData = await redis.get(`retry:task:${code}`);
+          const rawData = await redis.hget('retry:task', code);
           if (!rawData) continue;
           const task = JSON.parse(rawData);
           const nextRunTime = task.nextRun ? new Date(task.nextRun).toLocaleTimeString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false }) : '未知';
@@ -105,7 +105,7 @@ module.exports = async (req, res) => {
       // Handle /photo [CODE]
       if (cleanBody.startsWith('/photo ')) {
         const code = Body.trim().split(' ')[1];
-        const rawData = await redis.get(`retry:task:${code}`);
+        const rawData = await redis.hget('retry:task', code);
         if (!rawData) {
           await messagingClient.sendText(`❌ 找不到任務編號：${code}`);
           return res.status(200).send('<Response></Response>');
@@ -139,11 +139,10 @@ module.exports = async (req, res) => {
           return res.status(200).send('<Response></Response>');
         } else {
           const code = query;
-          const taskKey = `retry:task:${code}`;
-          const taskData = await redis.get(taskKey);
+          const taskData = await redis.hget('retry:task', code);
           
           if (taskData) {
-            await redis.del(taskKey);
+            await redis.hdel('retry:task', code);
             await redis.srem('retry:pending', code);
             await messagingClient.sendText(`✅ 已取消任務編號：${code}`);
             return res.status(200).send('<Response></Response>');
@@ -192,14 +191,14 @@ module.exports = async (req, res) => {
               // Queue for background audio
               const sid = body.SmsSid || body.MessageSid || `rand_${Math.floor(1000 + Math.random() * 9000)}`;
               const voiceCode = `v_${sid}`;
-              await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+              await redis.hset('retry:task', voiceCode, JSON.stringify({
                 taskType: 'voice-deep-dive',
                 platform: 'whatsapp',
                 keyword, context, From, To,
                 cachedResult: diveResult,
                 queuedAt: Date.now(),
                 nextRun: Date.now() + 2000 
-              }), 'EX', 3600);
+              }));
               await redis.sadd('retry:pending', voiceCode);
 
               return res.status(200).send('<Response></Response>');
@@ -253,13 +252,13 @@ module.exports = async (req, res) => {
           // Queue for web-link (Bilingual translation)
           const sid = body.SmsSid || body.MessageSid || `link_${Date.now()}`;
           const linkCode = `v_${sid}`;
-          await redis.set(`retry:task:${linkCode}`, JSON.stringify({
+          await redis.hset('retry:task', linkCode, JSON.stringify({
             taskType: 'web-link',
             platform: 'whatsapp',
             linkUrl: procResult.linkUrl, From, To,
             queuedAt: Date.now(),
             nextRun: Date.now() + 2000 
-          }), 'EX', 3600);
+          }));
           await redis.sadd('retry:pending', linkCode);
           handled = true;
         } else if (procResult.handled && !procResult.result) {
@@ -268,13 +267,13 @@ module.exports = async (req, res) => {
           if (isVoice) {
             const sid = body.SmsSid || body.MessageSid || `rand_${Math.floor(1000 + Math.random() * 9000)}`;
             const voiceCode = `v_${sid}`;
-            await redis.set(`retry:task:${voiceCode}`, JSON.stringify({
+            await redis.hset('retry:task', voiceCode, JSON.stringify({
               ...body,
               taskType: 'voice-fact-check',
               platform: 'whatsapp',
               queuedAt: Date.now(),
               nextRun: Date.now() + 5000 
-            }), 'EX', 3600);
+            }));
             await redis.sadd('retry:pending', voiceCode);
           }
           handled = true;
@@ -301,7 +300,6 @@ module.exports = async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 1500));
             
             const code = Math.floor(1000 + Math.random() * 9000).toString();
-            const taskKey = `retry:task:${code}`;
             const firstRetryTime = Date.now() + (2 * 60 * 1000); // 2 minutes later
             
             const taskState = {
@@ -312,7 +310,7 @@ module.exports = async (req, res) => {
               queuedAt: Date.now()
             };
 
-            await redis.set(taskKey, JSON.stringify(taskState), 'EX', 3600 * 48); // Store for 48h
+            await redis.hset('retry:task', code, JSON.stringify(taskState));
             await redis.sadd('retry:pending', code);
 
             const queueCount = await redis.scard('retry:pending');

@@ -385,20 +385,22 @@ async function runProcessorLoop() {
       }
 
       const task = JSON.parse(taskRaw);
+      
+      // Abandonment Detection (15 min cutoff) - Moved BEFORE isProcessing check to clear stuck tasks
+      const effectiveStartTime = task.startTime || task.queuedAt || Date.now();
+      if (Date.now() - effectiveStartTime > 900000) { // 15 minutes
+        console.warn(`⚠️ Task ${id} timed out (15m), abandoning.`);
+        await redis.hdel('retry:task', id);
+        await redis.srem('retry:pending', id);
+        continue;
+      }
+
       if (task.isProcessing || (task.nextRun && task.nextRun > Date.now())) continue;
 
       // Lock & Process
       task.isProcessing = true;
       task.startTime = task.startTime || Date.now();
       await redis.hset('retry:task', id, JSON.stringify(task));
-
-      // Abandonment Detection (15 min cutoff)
-      if (Date.now() - task.startTime > 900000) {
-        console.warn(`⚠️ Task ${id} timed out (15m), abandoning.`);
-        await redis.hdel('retry:task', id);
-        await redis.srem('retry:pending', id);
-        continue;
-      }
 
       console.log(`📡 Processing task ${id} (${task.taskType})`);
       
