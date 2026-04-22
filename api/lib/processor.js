@@ -8,6 +8,14 @@ const googleTTS = require('google-tts-api'); // Use existing dependency
 let GEMINI_API_KEY = ""; // Module-level key initialized in processRequest
 const DEPLOY_TIME = new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false });
 
+// Prioritized list of free models (Flash 2.0 > Flash 1.5 > Flash 1.5-8B)
+const FREE_MODELS = [
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
+  'gemini-flash-lite-latest'
+];
+
 // Helper: Global (Model, Key) Priority Ordering
 // Deprecated: Logic moved inside callGeminiApi rotation
 
@@ -306,8 +314,13 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
             }
           }
 
-          if (status === 400 || status === 403) {
-            throw new Error(`Gemini Error: ${errMsg}`);
+          // Search Grounding Fallback: If Search fails (Quota or Region), retry without tools immediately
+          if (tools && (status === 429 || status === 400 || status === 403)) {
+            console.log(`[callGeminiApi] 🔄 Search Grounding failed (${status}), retrying without tools for this key...`);
+            try {
+               const fallbackRes = await axios.post(geminiUrl, { contents: payload.contents }, { timeout: 20000 });
+               if (fallbackRes.data.candidates?.[0]?.content) return fallbackRes.data;
+            } catch (fErr) { /* fallback failed, continue to next key */ }
           }
 
           // Continue to next key for 429 or 5xx
@@ -380,9 +393,9 @@ async function processRequest(payload, messagingClient, tasksApi, config, redis,
 - NEW_NOTE: 其他（包含網頁連結分享或新筆記寫作）
 
 JSON Output: { "intent": "INTENT_NAME", "action": "動作（如 DELETE）" }`;
-
+ 
       try {
-        const intentResp = await callGeminiApi(['gemini-2.0-flash'], intentPrompt, GEMINI_API_KEY, null, null, null, redis);
+        const intentResp = await callGeminiApi(FREE_MODELS, intentPrompt, GEMINI_API_KEY, null, null, null, redis);
         const intentText = intentResp.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
         intentData = JSON.parse(intentText);
       } catch (e) { /* ignore and treat as new note */ }
@@ -541,12 +554,10 @@ Current Time: ${nowHK}`;
 返回最新的完整內容版本（繁體中文）。`;
       }
 
-      const models = ['gemini-flash-lite-latest'];
-
-      try {
-        console.log(`🎙️ Attempting transcription with centralized rotation...`);
-        const mediaData = { inline_data: { mime_type: MediaContentType0, data: buffer.toString("base64") } };
-        const transcriptionResp = await callGeminiApi(models, transcriptionPrompt, GEMINI_API_KEY, mediaData, null, null, redis);
+        try {
+          console.log(`🎙️ Attempting transcription with centralized rotation...`);
+          const mediaData = { inline_data: { mime_type: MediaContentType0, data: buffer.toString("base64") } };
+          const transcriptionResp = await callGeminiApi(FREE_MODELS, transcriptionPrompt, GEMINI_API_KEY, mediaData, null, null, redis);
 
         const transcriptionText = transcriptionResp.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
         if (!transcriptionText) throw new Error("未能識別語音內容。");
@@ -572,7 +583,7 @@ JSON Output: { "intent": "INTENT_NAME", "query": "關鍵字（如果是查詢）
 
     let intentData = { intent: 'NEW_NOTE' };
     try {
-      const intentResp = await callGeminiApi(['gemini-2.0-flash'], intentPrompt, GEMINI_API_KEY, null, null, null, redis);
+      const intentResp = await callGeminiApi(FREE_MODELS, intentPrompt, GEMINI_API_KEY, null, null, null, redis);
       const intentText = intentResp.candidates?.[0]?.content?.parts?.[0]?.text?.replace(/```json|```/g, '').trim() || "{}";
       intentData = JSON.parse(intentText);
     } catch (e) {
@@ -595,7 +606,7 @@ JSON Output: { "intent": "INTENT_NAME", "query": "關鍵字（如果是查詢）
       const summaryPrompt = `這是我最近的筆記內容。請用廣東話口語簡短地為我總結這 ${recentNotes.length} 條記錄，像是在跟我對話一樣。
 內容：
 ${listStr}`;
-      const summaryResp = await callGeminiApi(['gemini-2.0-flash'], summaryPrompt, GEMINI_API_KEY, null, null, null, redis);
+      const summaryResp = await callGeminiApi(FREE_MODELS, summaryPrompt, GEMINI_API_KEY, null, null, null, redis);
       const audioSummary = summaryResp.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
 
       await messagingClient.sendText(`📋 最近的筆記：\n\n${listStr}`);
@@ -664,8 +675,6 @@ async function processLink(targetUrl, From, messagingClient, config, redis, cach
       GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
     }
 
-    const models = ['gemini-flash-lite-latest'];
-    const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
     let finalContent = null;
     let successModel = null;
 
@@ -722,7 +731,7 @@ CRITICAL: TRADITIONAL CHINESE only. 請全程使用香港廣東話口語 (Hong K
 ${combinedText}`;
 
       // Using centralized callGeminiApi with rotation
-      const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, null, null, null, redis);
+      const geminiResponse = await callGeminiApi(FREE_MODELS, prompt, GEMINI_API_KEY, null, null, null, redis);
       finalContent = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
       if (finalContent) {
         successModel = "Gemini";
@@ -801,8 +810,6 @@ async function processImage(imageUrl, imageMime, From, messagingClient, config, 
     // 2. Download Media
     const imgBuffer = await messagingClient.downloadMedia(imageUrl);
     
-    const models = ['gemini-flash-lite-latest'];
-
     const prompt = `你是一個專業的事實查核與教育助手。請對輸入內容進行深度分析，輸出必須嚴格包含以下三個部分，並使用指定的分隔符號隔開：
 
 【第一部分：事實查核】
@@ -833,7 +840,7 @@ CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁�
       successModel = 'CACHED';
     } else {
       const mediaData = { inline_data: { mime_type: imageMime, data: imgBuffer.toString('base64') } };
-      const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, mediaData, [{ google_search: {} }], async (msg) => {
+      const geminiResponse = await callGeminiApi(FREE_MODELS, prompt, GEMINI_API_KEY, mediaData, [{ google_search: {} }], async (msg) => {
         try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) { }
       }, redis);
 
@@ -930,10 +937,6 @@ async function processDeepDive(keyword, context, From, messagingClient, config, 
   // Initialize module-level GEMINI_API_KEY
   GEMINI_API_KEY = config?.GEMINI_API_KEY || process.env.GEMINI_API_KEY || "";
 
-  const models = ['gemini-flash-lite-latest'];
-
-  const apiKeys = GEMINI_API_KEY.split(',').map(k => k.trim().replace(/^"|"$/g, ''));
-
   const prompt = `你是一個專業的教育助手。用戶對以下主題中的「${keyword}」感興趣，請為他進行深入淺出的解析。
 前情提要：${context}
 
@@ -960,7 +963,7 @@ CRITICAL: TRADITIONAL CHINESE only.`;
       result = cachedResult;
       successModel = 'CACHED';
     } else {
-      const geminiResponse = await callGeminiApi(models, prompt, GEMINI_API_KEY, null, null, async (msg) => {
+      const geminiResponse = await callGeminiApi(FREE_MODELS, prompt, GEMINI_API_KEY, null, null, async (msg) => {
         try { await messagingClient.sendText(`🤖 [系統提示] ${msg} ⏳`); } catch (e) { }
       }, redis);
       result = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text;
