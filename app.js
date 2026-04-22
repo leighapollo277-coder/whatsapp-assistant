@@ -52,7 +52,7 @@ const { TwilioMessagingClient, TelegramMessagingClient } = require('./api/lib/me
  */
 function getConfig() {
   return {
-    geminiKey: process.env.GEMINI_API_KEY || "",
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
     twilioSid: process.env.TWILIO_ACCOUNT_SID || "",
     twilioAuth: process.env.TWILIO_AUTH_TOKEN || "",
     twilioNumber: process.env.TWILIO_NUMBER || "",

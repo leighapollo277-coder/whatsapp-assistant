@@ -198,7 +198,7 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
         // Apply offset for round-robin
         const actualKIdx = (kIdx + keyOffset) % apiKeys.length;
         const key = apiKeys[actualKIdx];
-        const keyShort = `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
+        const keyShort = `${key.substring(0, 6)}...`;
 
         // 3. Check Cumulative Timeout (45s)
         if (Date.now() - startTime > 45000) {
@@ -243,7 +243,7 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
         const payload = { contents: [{ parts }] };
         if (tools) payload.tools = tools;
 
-        console.log(`[callGeminiApi] Round ${round} | Attempt ${auditTrail.length + 1}: ${model} | Key #${actualKIdx + 1}`);
+        console.log(`[callGeminiApi] Round ${round} | Attempt ${auditTrail.length + 1}: ${model} | Key #${actualKIdx + 1} (${keyShort})`);
 
         try {
           const response = await axios.post(geminiUrl, payload, {
@@ -276,9 +276,10 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
 
           auditTrail.push({ model, keyIndex: actualKIdx + 1, status, error: errMsg });
 
-          // Update Redis Health on failure
+          // Update Redis Health on failure (429 = Rate Limit, 5xx = Server Error)
           if (redis && (status === 429 || (status >= 500 && status < 600))) {
-            await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', 1800);
+            const cooldown = (status === 429) ? 3600 : 1800; // 1 hour for 429, 30 min for 5xx
+            await redis.set(`key_status:${model}:${key}`, `FAILED:${Date.now()}`, 'EX', cooldown);
           }
 
           // Region/Model Not Found Fallback (or Tool Discrepancy)
@@ -323,8 +324,8 @@ async function callGeminiApi(models, prompt, keysString, mediaData = null, tools
  * Core Processing Logic
  */
 async function processRequest(payload, messagingClient, tasksApi, config, redis, skipVoice = false, skipText = false, cachedResult = null) {
-  // Initialize module-level GEMINI_API_KEY for all helpers
-  GEMINI_API_KEY = config?.geminiKey || process.env.GEMINI_API_KEY || "";
+  // Initialize module-level GEMINI_API_KEY
+  GEMINI_API_KEY = config?.GEMINI_API_KEY || process.env.GEMINI_API_KEY || "";
 
   const { Body, From, MediaUrl0, MediaContentType0, platform } = payload;
   const GOOGLE_TASK_LIST_ID = (config.GOOGLE_TASK_LIST_ID || "").trim();
@@ -381,10 +382,8 @@ async function processRequest(payload, messagingClient, tasksApi, config, redis,
 JSON Output: { "intent": "INTENT_NAME", "action": "動作（如 DELETE）" }`;
 
       try {
-        const intentResp = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY.split(',')[0].trim()}`, {
-          contents: [{ parts: [{ text: intentPrompt }] }]
-        }, { timeout: 8000 });
-        const intentText = intentResp.data.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
+        const intentResp = await callGeminiApi(['gemini-2.0-flash'], intentPrompt, GEMINI_API_KEY, null, null, null, redis);
+        const intentText = intentResp.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
         intentData = JSON.parse(intentText);
       } catch (e) { /* ignore and treat as new note */ }
     }
@@ -929,15 +928,7 @@ CRITICAL: TRADITIONAL CHINESE only. 必須使用香港廣東話口語，嚴禁�
 
 async function processDeepDive(keyword, context, From, messagingClient, config, redis, skipVoice = false, skipText = false, cachedResult = null) {
   // Initialize module-level GEMINI_API_KEY
-  if (config?.GEMINI_API_KEY) {
-    GEMINI_API_KEY = config.GEMINI_API_KEY;
-  } else if (config?.geminiKey) {
-    GEMINI_API_KEY = config.geminiKey;
-  }
-
-  if (!GEMINI_API_KEY) {
-    GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-  }
+  GEMINI_API_KEY = config?.GEMINI_API_KEY || process.env.GEMINI_API_KEY || "";
 
   const models = ['gemini-flash-lite-latest'];
 
