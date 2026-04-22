@@ -72,18 +72,54 @@ async function generateAndSendVoice(text, messagingClient, statusPrefix = "🎙�
     }
 
     if (fs.existsSync(tmpAudioPath) && fs.statSync(tmpAudioPath).size > 500) {
-      const form = new FormData();
-      form.append('reqtype', 'fileupload');
-      const catboxFileName = `v_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp3`;
-      form.append('fileToUpload', fs.createReadStream(tmpAudioPath), { filename: catboxFileName });
+      let mediaUrl = null;
+      
+      // Attempt 1: tmpfiles.org (Primary)
+      try {
+        const form = new FormData();
+        form.append('file', fs.createReadStream(tmpAudioPath));
+        const resp = await axios.post('https://tmpfiles.org/api/v1/upload', form, {
+          headers: form.getHeaders(), 
+          timeout: 10000
+        });
+        if (resp.data?.status === 'success' && resp.data.data?.url) {
+          mediaUrl = resp.data.data.url.replace('https://tmpfiles.org/', 'https://tmpfiles.org/dl/').replace('http://', 'https://');
+          console.log(`✅ [Voice] Uploaded to tmpfiles: ${mediaUrl}`);
+        }
+      } catch (e) {
+        console.warn(`[generateAndSendVoice] tmpfiles upload failed: ${e.message}`);
+      }
 
-      const uploadResp = await axios.post('https://catbox.moe/user/api.php', form, {
-        headers: form.getHeaders(), timeout: 15000
-      });
-      const mediaUrl = String(uploadResp.data).trim();
-      if (mediaUrl.startsWith('http')) {
+      // Attempt 2: Catbox.moe (Fallback)
+      if (!mediaUrl) {
+        try {
+          const form = new FormData();
+          form.append('reqtype', 'fileupload');
+          form.append('fileToUpload', fs.createReadStream(tmpAudioPath), { filename: `v_${Date.now()}.mp3` });
+          const resp = await axios.post('https://catbox.moe/user/api.php', form, {
+            headers: {
+              ...form.getHeaders(),
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            timeout: 10000
+          });
+          const resText = String(resp.data).trim();
+          if (resText.startsWith('http')) {
+            mediaUrl = resText;
+            console.log(`✅ [Voice] Uploaded to Catbox (fallback): ${mediaUrl}`);
+          }
+        } catch (e) {
+          console.error(`[generateAndSendVoice] ALL upload hosts failed: ${e.message}`);
+        }
+      }
+
+      if (mediaUrl) {
         const now = new Date().toLocaleTimeString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false });
         const caption = partLabel ? `🎙️ ${partLabel} [${now}]` : `🎙️ [${now}]`;
+        
+        // Add a small safety delay for CDN propagation
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
         await messagingClient.sendVoice(mediaUrl, caption);
         try { fs.unlinkSync(tmpAudioPath); } catch (e) { }
         return true;
