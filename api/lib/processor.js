@@ -83,7 +83,7 @@ async function generateAndSendVoice(text, messagingClient, statusPrefix = "🎙�
           timeout: 10000
         });
         if (resp.data?.status === 'success' && resp.data.data?.url) {
-          mediaUrl = resp.data.data.url.replace('https://tmpfiles.org/', 'https://tmpfiles.org/dl/').replace('http://', 'https://');
+          mediaUrl = resp.data.data.url.replace(/https?:\/\/tmpfiles\.org\//, 'https://tmpfiles.org/dl/');
           console.log(`✅ [Voice] Uploaded to tmpfiles: ${mediaUrl}`);
         }
       } catch (e) {

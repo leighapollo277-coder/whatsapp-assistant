@@ -18,10 +18,16 @@ class TwilioMessagingClient extends MessagingClient {
     return await this.client.messages.create({ from: this.from, to: this.to, body: text });
   }
   async sendMedia(url, caption) {
-    return await this.client.messages.create({ from: this.from, to: this.to, body: caption, mediaUrl: [url] });
+    console.log(`[Twilio] Sending Media: ${url}`);
+    const msg = await this.client.messages.create({ from: this.from, to: this.to, body: caption, mediaUrl: [url] });
+    console.log(`[Twilio] Media Sent. SID: ${msg.sid}, Status: ${msg.status}`);
+    return msg;
   }
   async sendVoice(url, caption) {
-    return await this.client.messages.create({ from: this.from, to: this.to, body: caption, mediaUrl: [url] });
+    console.log(`[Twilio] Sending Voice: ${url}`);
+    const msg = await this.client.messages.create({ from: this.from, to: this.to, body: caption, mediaUrl: [url] });
+    console.log(`[Twilio] Voice Sent. SID: ${msg.sid}, Status: ${msg.status}`);
+    return msg;
   }
   async downloadMedia(mediaUrl) {
     const response = await axios({
